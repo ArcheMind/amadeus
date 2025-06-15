@@ -13,6 +13,7 @@ import socket
 from amadeus.config_schema import CONFIG_SCHEMA, EXAMPLE_CONFIG
 from amadeus.config_router import ConfigRouter
 from amadeus.config_persistence import ConfigPersistence
+from amadeus.manager.multiprocess_manager import MultiprocessManager, MultiprocessState
 import yaml
 import threading
 from fastapi.middleware.cors import CORSMiddleware
@@ -22,62 +23,34 @@ from fastapi.middleware.cors import CORSMiddleware
 multiprocessing.set_start_method('spawn', force=True)
 
 
-def run_app_process(config_yaml: str, app_name: str, log_queue):
+def run_amadeus_app_target(config_yaml: str, app_name: str):
     """
     在子进程中运行amadeus app的函数
     """
-    try:
-        # 设置环境变量
-        os.environ["AMADEUS_CONFIG"] = config_yaml
-        os.environ["AMADEUS_APP_NAME"] = app_name
-        
-        # 重定向日志到队列
-        import logging
-        
-        # 设置日志处理器，将日志发送到队列
-        class QueueHandler(logging.Handler):
-            def __init__(self, log_queue):
-                super().__init__()
-                self.log_queue = log_queue
-            
-            def emit(self, record):
-                try:
-                    self.log_queue.put({
-                        'app_name': app_name,
-                        'level': record.levelname,
-                        'message': self.format(record),
-                        'timestamp': record.created
-                    })
-                except Exception:
-                    pass  # 忽略日志发送错误
-        
-        # 配置日志
-        root_logger = logging.getLogger()
-        root_logger.setLevel(logging.INFO)
-        # 清除现有处理器
-        for handler in root_logger.handlers[:]:
-            root_logger.removeHandler(handler)
-        # 添加队列处理器
-        queue_handler = QueueHandler(log_queue)
-        queue_handler.setFormatter(logging.Formatter('%(levelname)s - %(message)s'))
-        root_logger.addHandler(queue_handler)
-        
-        # 启动amadeus app
-        from amadeus.app import main
+    # 设置环境变量
+    os.environ["AMADEUS_CONFIG"] = config_yaml
+    os.environ["AMADEUS_APP_NAME"] = app_name
+    
+    # 在子进程中重新配置loguru，确保日志通过stdout发送到父进程的队列中
+    logger.remove()
+    logger.add(
+        sys.stdout,
+        level="INFO",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+        enqueue=True,  # 使用队列来确保进程安全
+        backtrace=True, # 记录异常回溯
+        colorize=True
+    )
+    
+    # 启动amadeus app
+    from amadeus.app import main
 
+    try:
         main()
-                
     except Exception as e:
-        # 发送错误日志
-        try:
-            log_queue.put({
-                'app_name': app_name,
-                'level': 'ERROR',
-                'message': f"Process failed: {str(e)}",
-                'timestamp': None
-            })
-        except Exception:
-            pass  # 忽略日志发送错误
+        # 使用配置好的logger来记录异常，它会被发送到父进程
+        logger.exception(f"An exception occurred in amadeus.app.main for '{app_name}': {e}")
+        # 抛出异常以确保子进程以错误代码退出
         raise
 
 
@@ -105,26 +78,10 @@ async def lifespan(_: fastapi.FastAPI):
             except asyncio.CancelledError:
                 logger.info("Process watcher task cancelled.")
 
-        active_processes = list(
-            ProcessManager.processes.values()
-        )  # Create a list to avoid issues if termination modifies the dict
-        for pc_instance in active_processes:
-            if (
-                pc_instance and pc_instance.process
-            ):  # Check if pc_instance and its process are valid
-                app_name_to_log = (
-                    pc_instance.app_name
-                    if hasattr(pc_instance, "app_name")
-                    else f"(PID: {pc_instance.process.pid})"
-                )
-                logger.info(f"Shutting down service '{app_name_to_log}'.")
-                await pc_instance.terminate()
-            elif pc_instance:
-                logger.warning(
-                    f"Process control instance for '{pc_instance.app_name if hasattr(pc_instance, 'app_name') else 'unknown app'}' has no active process during shutdown."
-                )
-            else:
-                logger.warning("Found a None process control instance during shutdown.")
+        active_processes = list(ProcessManager.processes.values())
+        for manager in active_processes:
+            logger.info(f"Shutting down service '{manager.name}'.")
+            await manager.close()
 
         ProcessManager.processes.clear()  # Clear out the process map
         logger.info(
@@ -436,142 +393,9 @@ def digest_config_data(config_data):
     return resolved_apps
 
 
-async def start_and_watch_app(app_hash, app_detail):
-    app_yaml = app_detail["yaml"]
-    app_name = app_detail["name"]
-
-    logger.info(f"Attempting to start service for app '{app_name}'.")
-
-    log_queue = multiprocessing.Queue()
-
-    process = multiprocessing.Process(
-        target=run_app_process,
-        args=(app_yaml, app_name, log_queue),
-        name=f"amadeus-app-{app_name}",
-        daemon=False,
-    )
-    process.start()
-
-    await asyncio.sleep(3)
-
-    if not process.is_alive():
-        logger.error(
-            f"Service for app '{app_name}' terminated prematurely within 3 seconds of start."
-        )
-        try:
-            process.join(timeout=1)
-        except Exception as e:
-            logger.error(f"Error joining premature process for '{app_name}': {e}")
-
-        return {
-            "app_hash": app_hash,
-            "app_name": app_name,
-            "success": False,
-            "process": None,
-            "log_queue": None,
-        }
-    else:
-        logger.info(f"Service for app '{app_name}' seems to have started successfully.")
-        return {
-            "app_hash": app_hash,
-            "app_name": app_name,
-            "success": True,
-            "process": process,
-            "log_queue": log_queue,
-        }
-
-
-class ProcessControl:
-    def __init__(self, app_name):
-        self.app_name = app_name
-        self.process = None
-        self.log_queue = None
-        self.log_streamer = None
-        self.log_stop_event = None
-
-    def _stream_logs(self):
-        """
-        从日志队列中读取并打印日志消息
-        """
-        while not self.log_stop_event.is_set():
-            try:
-                # 使用timeout避免无限阻塞
-                log_entry = self.log_queue.get(timeout=1)
-                if log_entry:
-                    app_name = log_entry.get('app_name', 'unknown')
-                    level = log_entry.get('level', 'INFO')
-                    message = log_entry.get('message', '')
-                    
-                    # 映射日志级别
-                    log_level = getattr(logging, level.upper(), logging.INFO)
-                    logger.log(
-                        log_level, 
-                        f"[{app_name} PID: {self.process.pid if self.process else 'unknown'}] {message}"
-                    )
-            except Exception as e:
-                # 处理队列超时和其他异常
-                if "Empty" in str(type(e).__name__) or "timeout" in str(e).lower():
-                    # 超时，继续循环
-                    continue
-                else:
-                    logger.error(f"Error processing log for '{self.app_name}': {e}")
-                    break
-
-    async def start(self, process, log_queue):
-        self.process = process
-        self.log_queue = log_queue
-        self.log_stop_event = threading.Event()
-        
-        logger.info(
-            f"Service '{self.app_name}' (PID: {self.process.pid}) starting log streaming."
-        )
-        
-        # 启动日志流线程
-        self.log_streamer = threading.Thread(
-            target=self._stream_logs,
-            daemon=True
-        )
-        self.log_streamer.start()
-        
-        return self
-
-    async def terminate(self):
-        if self.process:
-            logger.info(
-                f"Terminating service '{self.app_name}' (PID: {self.process.pid})."
-            )
-            
-            # 停止日志流
-            if self.log_stop_event:
-                self.log_stop_event.set()
-            
-            # 终止进程
-            self.process.terminate()
-            
-            try:
-                # 等待进程终止，最多5秒
-                self.process.join(timeout=5)
-                if self.process.is_alive():
-                    logger.warning(
-                        f"Service '{self.app_name}' (PID: {self.process.pid}) did not terminate in time, killing it."
-                    )
-                    self.process.kill()
-                    self.process.join(timeout=2)  # 等待kill完成
-            except Exception as e:
-                logger.error(f"Error terminating process '{self.app_name}': {e}")
-            
-            # 等待日志流线程结束
-            if self.log_streamer and self.log_streamer.is_alive():
-                self.log_streamer.join(timeout=2)
-            
-            logger.info(
-                f"Service '{self.app_name}' (PID: {self.process.pid}) terminated."
-            )
-
-
 class ProcessManager:
-    processes = {}
-    watcher = None
+    processes: Dict[int, MultiprocessManager] = {}
+    watcher: Optional[asyncio.Task] = None
 
     @classmethod
     async def apply_config(cls, config_data):
@@ -600,42 +424,52 @@ class ProcessManager:
 
         for app_hash in to_remove_hashes:
             if app_hash in cls.processes:
-                # Retrieve app_name if stored, otherwise use hash
-                app_name_to_log = (
-                    cls.processes[app_hash].app_name
-                    if hasattr(cls.processes[app_hash], "app_name")
-                    else f"hash: {app_hash}"
-                )
-                logger.info(f"Stopping service for app '{app_name_to_log}'.")
-                await cls.processes[app_hash].terminate()
+                manager = cls.processes[app_hash]
+                logger.info(f"Stopping service for app '{manager.name}'.")
+                await manager.close()
                 del cls.processes[app_hash]
 
         if to_add_hashes:
-            tasks = [
-                start_and_watch_app(app_hash, app_info_map[app_hash])
-                for app_hash in to_add_hashes
-            ]
-            startup_results = await asyncio.gather(*tasks)
+            for app_hash in to_add_hashes:
+                app_detail = app_info_map[app_hash]
+                app_name = app_detail["name"]
+                app_yaml = app_detail["yaml"]
 
-            for result in startup_results:
-                if result["success"]:
-                    pc = await ProcessControl(result["app_name"]).start(
-                        result["process"], result["log_queue"]
+                logger.info(f"Attempting to start service for app '{app_name}'.")
+
+                manager = MultiprocessManager(
+                    name=app_name,
+                    target=run_amadeus_app_target,
+                    args=(app_yaml, app_name),
+                    stream_logs=True,
+                )
+                await manager.start()
+                
+                # 等待一小段时间，然后检查状态
+                await asyncio.sleep(3)
+
+                if manager.current_state != MultiprocessState.RUNNING:
+                    logger.error(
+                        f"Service for app '{app_name}' failed to start or terminated prematurely. Current state: {manager.current_state}"
                     )
-                    cls.processes[result["app_hash"]] = pc
-                else:
+                    await manager.close()
+                    
                     config_changed = True
                     for app_config_item in config_data.get("apps", []):
-                        if app_config_item.get("name") == result["app_name"]:
+                        if app_config_item.get("name") == app_name:
                             app_config_item["enable"] = False
                             logger.info(
-                                f"App '{result['app_name']}' has been disabled in the configuration due to startup failure."
+                                f"App '{app_name}' has been disabled in the configuration due to startup failure."
                             )
                             break
+                else:
+                    logger.info(f"Service for app '{app_name}' started successfully.")
+                    cls.processes[app_hash] = manager
+
 
         logger.info(f"System status: {len(cls.processes)} service(s) now running.")
 
-        if cls.watcher is None:
+        if cls.watcher is None or cls.watcher.done():
             cls.watcher = asyncio.create_task(cls.watch_processes())
 
         return config_data, config_changed
@@ -643,68 +477,30 @@ class ProcessManager:
     @classmethod
     async def watch_processes(cls):
         """
-        Monitors managed processes and restarts them if they terminate unexpectedly.
+        Monitors managed processes and handles unexpected termination.
         """
         while True:
-            for app_hash, pc_instance in list(
-                cls.processes.items()
-            ):  # Use pc_instance to avoid confusion with subprocess.Process
-                # Ensure pc_instance and its process attribute are valid
-                if pc_instance is None or pc_instance.process is None:
-                    logger.error(
-                        f"Invalid process control instance or process for app_hash: {app_hash}. Removing from tracking."
-                    )
-                    if app_hash in cls.processes:
-                        del cls.processes[app_hash]
-                    continue
-
-                # Check if the process has terminated
-                if not pc_instance.process.is_alive():
-                    app_name_to_log = (
-                        pc_instance.app_name
-                        if hasattr(pc_instance, "app_name")
-                        else f"hash: {app_hash}"
-                    )
-                    exit_code = pc_instance.process.exitcode
-                    logger.warning(
-                        f"Service '{app_name_to_log}' (PID: {pc_instance.process.pid}) terminated unexpectedly. Exit code: {exit_code}"
-                    )
-                    
-                    # 尝试清理剩余的日志消息
-                    try:
-                        # 停止日志流线程
-                        if pc_instance.log_stop_event:
-                            pc_instance.log_stop_event.set()
-                        
-                        # 处理队列中剩余的日志消息
-                        if pc_instance.log_queue:
-                            while True:
-                                try:
-                                    log_entry = pc_instance.log_queue.get_nowait()
-                                    if log_entry:
-                                        message = log_entry.get('message', '')
-                                        level = log_entry.get('level', 'INFO')
-                                        log_level = getattr(logging, level.upper(), logging.INFO)
-                                        logger.log(log_level, f"[{app_name_to_log} FINAL]: {message}")
-                                except Exception as e:
-                                    # 处理队列Empty异常或其他异常
-                                    break
-                    except Exception as e:
-                        logger.error(
-                            f"Error processing final logs for terminated service '{app_name_to_log}': {e}"
+            try:
+                for app_hash, manager in list(cls.processes.items()):
+                    if manager.current_state in [MultiprocessState.STOPPED, MultiprocessState.ERROR]:
+                        logger.warning(
+                            f"Service '{manager.name}' terminated unexpectedly with state: {manager.current_state}. "
+                            "It will be removed from active processes."
                         )
+                        
+                        await manager.close() # Ensure cleanup
+                        del cls.processes[app_hash]
 
-                    # Clean up old process control instance
-                    if app_hash in cls.processes:
-                        del cls.processes[
-                            app_hash
-                        ]  # Remove before attempting to restart
-                    logger.info(f"Attempting to restart service '{app_name_to_log}'.")
-                    logger.warning(
-                        f"Automatic restart for '{app_name_to_log}' is not yet implemented. The service will remain stopped."
-                    )
-
-            await asyncio.sleep(10)  # Check every 10 seconds
+                        logger.warning(
+                            f"Automatic restart for '{manager.name}' is not yet implemented. The service will remain stopped."
+                        )
+                await asyncio.sleep(10)  # Check every 10 seconds
+            except asyncio.CancelledError:
+                logger.info("Process watcher task is shutting down.")
+                break
+            except Exception as e:
+                logger.error(f"An error occurred in the process watcher: {e}")
+                await asyncio.sleep(10) # wait before retrying
 
 
 class InterceptHandler(logging.Handler):
@@ -722,7 +518,7 @@ def setup_loguru():
     logger.add(
         sys.stdout,
         level="INFO",
-        format="<green>{time}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
     )
 
     # 拦截标准 logging

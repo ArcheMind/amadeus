@@ -1,4 +1,5 @@
 import csv
+import socket
 import datetime
 from io import StringIO
 import time
@@ -95,3 +96,14 @@ def async_lru_cache(maxsize=128):
         return wrapper
 
     return decorator
+
+
+def find_free_ports(n) -> tuple[int, int]:
+    sockets = []
+    ports = []
+    for _ in range(n):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', 0))
+            ports.append(s.getsockname()[1])
+            sockets.append(s)
+    return tuple(ports)

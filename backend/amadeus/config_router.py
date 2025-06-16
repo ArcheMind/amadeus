@@ -372,7 +372,7 @@ class ConfigRouter:
                     else:
                         raise HTTPException(
                             status_code=400,
-                            json={"detail": f"Update of instance '{instance_name}' failed"},
+                            detail=f"Update of instance '{instance_name}' failed",
                         )
 
             raise HTTPException(

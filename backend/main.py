@@ -11,6 +11,7 @@ import multiprocessing
 import copy
 import fastapi
 import socket
+from amadeus.common import green
 from amadeus.config_schema import CONFIG_SCHEMA, EXAMPLE_CONFIG
 from amadeus.config_router import ConfigRouter
 from amadeus.config_persistence import ConfigPersistence
@@ -67,7 +68,7 @@ async def lifespan(_: fastapi.FastAPI):
         config_data = config_persistence.load()
         # Avoid logging full config_data if it's too verbose or contains sensitive info
         # logger.debug(f"Initial configuration data: {config_data}")
-        await WorkerManager.apply_config(config_data)
+        config_data, _ = await WorkerManager.apply_config(config_data)
         logger.info("Application startup: Services initialized.")
         yield  # Yield control back to the FastAPI app
     finally:
@@ -140,7 +141,7 @@ config_router = ConfigRouter(
 )
 
 
-async def joined_group_enhancer(
+async def app_enhancer(
     schema: Dict[str, Any],
     config_data: Dict[str, Any],
     class_name: str,
@@ -156,34 +157,66 @@ async def joined_group_enhancer(
         f"Enhancing schema for class '{class_name}' with instance '{instance_name}'"
     )
     instances = config_data.get(class_name, [])
+    if not instance_name:
+        return schema
+
     for instance in instances:
         if instance.get("name") == instance_name:
             break
     else:
         return schema
 
-    send_port = instance["send_port"]
-    if not send_port:
-        return schema
+    schema = copy.deepcopy(schema)
 
-    from amadeus.executors.im import InstantMessagingClient
+    send_port = instance.get("send_port")
 
-    im = InstantMessagingClient(api_base=f"ws://localhost:{send_port}")
+    if instance.get("managed", False):
+        # If the instance is managed, we need to get the IM service manager
+        im_name = f"im-{md5(instance_name.encode()).hexdigest()[:10]}-{instance.get('account', 'default')}"
+        im_manager = WorkerManager.managed_ims.get(im_name)
+        manager_status = "🛑已停止"
+        if im_manager:
+            backend_port = im_manager.ports.get(6099)
+            send_port = im_manager.ports.get(3001)
+            if not im_manager.running:
+                manager_status = "🛑已停止"
+            elif im_manager.current_state == "LOGIN":
+                manager_status = f"🟡运行中(未登录) | [点击登录](http://localhost:{backend_port}/webui?token=napcat)"
+            elif im_manager.current_state == "ONLINE":
+                manager_status = f"🟢运行中(已登录) | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
+            else:
+                manager_status = f"🔵状态: {im_manager.current_state}"
+        else:
+            logger.warning(
+                f"Managed instance '{instance_name}' not found in WorkerManager."
+            )
+        schema["schema"]["properties"]["managed"]["description"] = manager_status
 
-    try:
-        groups = await im.get_joined_groups()
-        schema = copy.deepcopy(schema)
-        if groups:
-            schema["schema"]["properties"]["enabled_groups"]["suggestions"] = [
-                {"title": group["group_name"], "const": str(group["group_id"])}
-                for group in groups
-            ]
-        return schema
-    except Exception as e:
-        logger.error(
-            f"Error enhancing schema for class '{class_name}' with instance '{instance_name}': {str(e)}"
+    if send_port:
+        from amadeus.executors.im import InstantMessagingClient
+
+        im = InstantMessagingClient(api_base=f"ws://localhost:{send_port}")
+        logger.info(
+            f"Enhancing schema for class '{class_name}' with instance '{instance_name}' using IM client on port {send_port}"
         )
-        return schema
+        try:
+            groups = await im.get_joined_groups()
+            if groups:
+                schema["schema"]["properties"]["enabled_groups"]["suggestions"] = [
+                    {"title": group["group_name"], "const": str(group["group_id"])}
+                    for group in groups
+                ]
+            return schema
+        except Exception as e:
+            import traceback
+            logger.error(
+                f"Error enhancing schema for class '{class_name}' with instance '{instance_name}': {str(e)}"
+            )
+            logger.error(
+                traceback.format_exc()
+            )
+
+    return schema
 
 
 async def model_list_enhancer(
@@ -281,7 +314,7 @@ async def select_model_enhancer(
 
 config_router.register_schema_enhancer(
     "apps",
-    joined_group_enhancer,
+    app_enhancer,
 )
 config_router.register_schema_enhancer(
     "model_providers",
@@ -368,9 +401,6 @@ def digest_config_data(config_data):
 
     for app_config in apps_to_process:
         app_name = app_config.get("name", "UnnamedApp")
-        # if not app_config.get("enable", False):
-        #     logger.info(f"App '{app_name}' is disabled, skipping.")
-        #     continue
         if app_name in seen_app_names:
             logger.warning(
                 f"Duplicate app name '{app_name}' found in configuration, skipping subsequent instance."
@@ -405,7 +435,6 @@ class WorkerManager:
     amadeus_workers: Dict[int, MultiprocessManager] = {}
     managed_ims: Dict[str, DockerRunManager] = {}
     watcher: Optional[asyncio.Task] = None
-    im_startup_tasks: set = set()
 
     @classmethod
     async def apply_config(cls, config_data):
@@ -415,7 +444,6 @@ class WorkerManager:
         logger.info(f"Applying configuration. {len(apps)} app(s) to configure.")
 
         # Store app name along with hash for better logging
-        app_info_map = {}
         im_info_map = {}
         for app_config in apps:
             if app_config.get("managed", False):
@@ -425,21 +453,14 @@ class WorkerManager:
                     "name": name,
                     "config": app_config,
                 }
-            if app_config.get("enable", False):
-                app_yaml = yaml.safe_dump(app_config, allow_unicode=True, sort_keys=True)
-                app_hash = md5(app_yaml.encode()).hexdigest()[:10]
-                app_name = app_config.get("name", f"amadeus-{app_hash}")
-                app_info_map[app_name] = {
-                    "name": app_name,
-                    "yaml": app_yaml,
-                    "config": app_config,
-                }
 
         prev_ims = set(cls.managed_ims.keys())
         current_ims = set(im_info_map.keys())
 
         to_remove_ims = prev_ims - current_ims
         to_add_ims = current_ims - prev_ims
+
+        managed_ports = {}
 
         for im_key in to_remove_ims:
             if im_key in cls.managed_ims:
@@ -448,16 +469,14 @@ class WorkerManager:
                 del cls.managed_ims[im_key]
 
         if to_add_ims:
-
-            async def start_and_monitor_im(im_key):
-                nonlocal config_changed
+            for im_key in to_add_ims:
+                config = im_info_map[im_key]["config"]
                 manager = get_napcat_manager(
                     config_name=im_key,
-                    account=im_info_map[im_key]["config"]["account"],
+                    account=config["account"],
                 )
                 await manager.start()
                 cls.managed_ims[im_key] = manager
-
                 try:
                     # Wait for a short period, then check the status
                     await asyncio.sleep(0.2)
@@ -475,30 +494,46 @@ class WorkerManager:
                         del cls.managed_ims[im_key]
                         return
 
-                    im_info_map[im_key]["config"]["send_port"] = manager.ports[3000]
-                    config_changed = True
-                    logger.info(
-                        f"IM service for '{im_key}' started successfully on port {manager.ports[3000]}."
-                    )
+                    for app in config_data.get("apps", []):
+                        if app.get("name") == config["name"]:
+                            app["send_port"] = manager.ports[3001]
+                            break
 
+                    logger.info(
+                        f"IM service for '{im_key}' started successfully on port {manager.ports[3001]}."
+                    )
                 except Exception as e:
                     logger.error(f"Error during IM service startup for '{im_key}': {e}")
                     await manager.close()
                     if im_key in cls.managed_ims:
                         del cls.managed_ims[im_key]
 
-            for im_key in to_add_ims:
-                task = asyncio.create_task(start_and_monitor_im(im_key))
-                cls.im_startup_tasks.add(task)
-                task.add_done_callback(cls.im_startup_tasks.discard)
+        for im_key, manager in cls.managed_ims.items():
+            config = im_info_map[im_key]["config"]
+            managed_ports[config["name"]] = manager.ports[3001]
+
+        app_info_map = {}
+        apps = digest_config_data(config_data)
+        for app_config in apps:
+            if app_config.get("enable", False):
+                if app_config.get("name") in managed_ports:
+                    app_config["send_port"] = managed_ports[app_config["name"]]
+                app_yaml = yaml.safe_dump(app_config, allow_unicode=True, sort_keys=True)
+                app_hash = md5(app_yaml.encode()).hexdigest()[:10]
+                name = f"amadeus-{app_hash}"
+                app_info_map[name] = {
+                    "name": name,
+                    "config": app_config,
+                }
 
         logger.info(
             f"IM services status: {len(cls.managed_ims)} IM service(s) now running."
         )
 
         prev_process_hashes = set(cls.amadeus_workers.keys())
-        current_app_hashes = set(
-            k for k in app_info_map.keys() if app_info_map[k]["config"].get("enable", False)
+        current_app_hashes = set(app_info_map.keys())
+        logger.info(
+            f"Current app hashes: {current_app_hashes}, Previous process hashes: {prev_process_hashes}"
         )
 
         to_remove_amadeus = prev_process_hashes - current_app_hashes
@@ -516,7 +551,9 @@ class WorkerManager:
             for app_hash in to_add_amadeus:
                 app_detail = app_info_map[app_hash]
                 app_name = app_detail["name"]
-                app_yaml = app_detail["yaml"]
+                app_yaml = yaml.safe_dump(
+                    app_detail["config"], allow_unicode=True, sort_keys=True
+                )
 
                 logger.info(f"Attempting to start service for app '{app_name}'.")
 

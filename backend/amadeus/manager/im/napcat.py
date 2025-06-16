@@ -36,7 +36,7 @@ def get_napcat_manager(config_name: str, account: str) -> DockerRunManager:
         image_name="mlikiowa/napcat-docker:latest",
         name=config_name,
         custom_states=custom_states,
-        ports={api_port: 3000, webui_port: 6099},
+        ports={api_port: 3001, webui_port: 6099},
         volumes={
             str(napcat_config_path.resolve()): "/app/napcat/config",
             str(ntqq_path.resolve()): "/app/.config/QQ",

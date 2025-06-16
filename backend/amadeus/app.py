@@ -166,6 +166,7 @@ async def _main():
     for daemon in DAEMONS:
         if daemon not in _TASKS:
             _TASKS[daemon] = asyncio.create_task(daemon())
+    logger.info(green(f"主进程启动， 连接到 WebSocket 端口 {AMADEUS_CONFIG.send_port}"))
     port = AMADEUS_CONFIG.send_port
     uri = f"ws://localhost:{port}/"
     helper = WsConnector(uri)

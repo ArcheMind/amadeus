@@ -20,15 +20,15 @@ class DockerContainerState(Enum):
 class DockerRunManager:
     _managers: Dict[str, 'DockerRunManager'] = {}
 
-    def __new__(cls, container_name: str, *args, **kwargs):
-        if container_name in cls._managers:
-            return cls._managers[container_name]
+    def __new__(cls, name: str, *args, **kwargs):
+        if name in cls._managers:
+            return cls._managers[name]
         instance = super().__new__(cls)
-        cls._managers[container_name] = instance
+        cls._managers[name] = instance
         return instance
 
     def __init__(self,
-                 container_name: str,
+                 name: str,
                  image_name: str,
                  run_command: Optional[List[str]] = None,
                  custom_states: Optional[Dict[str, str]] = None,
@@ -36,13 +36,15 @@ class DockerRunManager:
         if hasattr(self, '_initialized'):
             return
         
-        self.container_name = container_name
+        self.name = name
         self.image_name = image_name
         self.run_command = run_command or []
+        ports = kwargs.get('ports', {})
+        self.ports = {v: k for k, v in ports.items()}
         self.docker_run_options = kwargs
 
         self._current_state: Union[DockerContainerState, str] = DockerContainerState.PENDING
-        self._state_changed_event = asyncio.Event()
+        self.state_changed = asyncio.Event()
         
         self.custom_state_patterns: Dict[str, re.Pattern] = {}
         if custom_states:
@@ -64,15 +66,19 @@ class DockerRunManager:
     def current_state(self) -> Union[DockerContainerState, str]:
         return self._current_state
 
+    @property
+    def running(self) -> bool:
+        return self._current_state not in [DockerContainerState.PENDING, DockerContainerState.STOPPED, DockerContainerState.ERROR]
+
     async def set_state(self, new_state: Union[DockerContainerState, str]):
         if self._current_state != new_state:
             logger.info(f"stage change: {self._current_state} -> {new_state}")
             self._current_state = new_state
-            self._state_changed_event.set()
-            self._state_changed_event.clear()
+            self.state_changed.set()
+            self.state_changed.clear()
 
     def _build_docker_run_command(self) -> List[str]:
-        cmd = ["docker", "run", "--name", self.container_name, "-d"]
+        cmd = ["docker", "run", "--name", self.name, "-d"]
         
         for key, value in self.docker_run_options.items():
             option = f"--{key.replace('_', '-')}"
@@ -113,7 +119,7 @@ class DockerRunManager:
 
 
     async def _get_container_id_by_name(self) -> Optional[str]:
-        return await self._run_subprocess("docker", "ps", "-a", "--filter", f"name=^{self.container_name}$", "--format", "{{.ID}}")
+        return await self._run_subprocess("docker", "ps", "-a", "--filter", f"name=^{self.name}$", "--format", "{{.ID}}")
 
     async def _get_container_state_by_id(self, container_id: str) -> Optional[str]:
          return await self._run_subprocess("docker", "inspect", "-f", "{{.State.Status}}", container_id)
@@ -223,7 +229,7 @@ class DockerRunManager:
                         break
                     
                     line = line_bytes.decode('utf-8', errors='ignore').strip()
-                    # logger.debug(f"Log line from {self.container_name}: {line}")
+                    # logger.debug(f"Log line from {self.name}: {line}")
                     for state, pattern in self.custom_state_patterns.items():
                         if pattern.search(line):
                             await self.set_state(state)
@@ -247,7 +253,7 @@ class DockerRunManager:
         
         async def _wait_loop():
             while self.current_state != state:
-                await self._state_changed_event.wait()
+                await self.state_changed.wait()
         
         try:
             await asyncio.wait_for(_wait_loop(), timeout=timeout)
@@ -256,7 +262,7 @@ class DockerRunManager:
             return False
 
     async def close(self):
-        logger.info(f"Closing DockerRunManager for container '{self.container_name}'")
+        logger.info(f"Closing DockerRunManager for container '{self.name}'")
         if self.current_state not in [DockerContainerState.STOPPED, DockerContainerState.STOPPING]:
              await self.stop()
         
@@ -268,12 +274,12 @@ class DockerRunManager:
         await asyncio.gather(*self._monitor_tasks, return_exceptions=True)
         self._monitor_tasks.clear()
 
-        if self.container_name in DockerRunManager._managers:
-            del DockerRunManager._managers[self.container_name]
+        if self.name in DockerRunManager._managers:
+            del DockerRunManager._managers[self.name]
 
     def __del__(self):
-        if self.container_name in DockerRunManager._managers:
-            del DockerRunManager._managers[self.container_name]
+        if self.name in DockerRunManager._managers:
+            del DockerRunManager._managers[self.name]
         
         for task in self._monitor_tasks:
             task.cancel() 

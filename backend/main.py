@@ -1,4 +1,5 @@
 import os
+from hashlib import md5
 import logging
 from loguru import logger
 import sys
@@ -14,8 +15,9 @@ from amadeus.config_schema import CONFIG_SCHEMA, EXAMPLE_CONFIG
 from amadeus.config_router import ConfigRouter
 from amadeus.config_persistence import ConfigPersistence
 from amadeus.manager.multiprocess_manager import MultiprocessManager, MultiprocessState
+from amadeus.manager.docker_manager import DockerRunManager
+from amadeus.manager.im.napcat import get_napcat_manager
 import yaml
-import threading
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -65,27 +67,33 @@ async def lifespan(_: fastapi.FastAPI):
         config_data = config_persistence.load()
         # Avoid logging full config_data if it's too verbose or contains sensitive info
         # logger.debug(f"Initial configuration data: {config_data}")
-        await ProcessManager.apply_config(config_data)
+        await WorkerManager.apply_config(config_data)
         logger.info("Application startup: Services initialized.")
         yield  # Yield control back to the FastAPI app
     finally:
         # Shutdown event
         logger.info("Application shutdown: Terminating all services.")
-        if ProcessManager.watcher:
-            ProcessManager.watcher.cancel()
+        if WorkerManager.watcher:
+            WorkerManager.watcher.cancel()
             try:
-                await ProcessManager.watcher
+                await WorkerManager.watcher
             except asyncio.CancelledError:
                 logger.info("Process watcher task cancelled.")
 
-        active_processes = list(ProcessManager.processes.values())
+        active_processes = list(WorkerManager.amadeus_workers.values())
         for manager in active_processes:
             logger.info(f"Shutting down service '{manager.name}'.")
             await manager.close()
 
-        ProcessManager.processes.clear()  # Clear out the process map
+        active_ims = list(WorkerManager.managed_ims.values())
+        for manager in active_ims:
+            logger.info(f"Shutting down im service '{manager.name}'.")
+            await manager.close()
+
+        WorkerManager.amadeus_workers.clear()  # Clear out the process map
+        WorkerManager.managed_ims.clear()
         logger.info(
-            "Application shutdown: All services terminated. ProcessManager shutdown complete."
+            "Application shutdown: All services terminated. WorkerManager shutdown complete."
         )
 
 
@@ -119,7 +127,7 @@ config_persistence = ConfigPersistence(EXAMPLE_CONFIG)
 
 async def save_config_data(config_data: dict):
     logger.info("Updating configuration data.")
-    modified_config_data, config_changed = await ProcessManager.apply_config(config_data)
+    modified_config_data, config_changed = await WorkerManager.apply_config(config_data)
     config_persistence.save(modified_config_data)
     return config_changed
 
@@ -360,9 +368,9 @@ def digest_config_data(config_data):
 
     for app_config in apps_to_process:
         app_name = app_config.get("name", "UnnamedApp")
-        if not app_config.get("enable", False):
-            logger.info(f"App '{app_name}' is disabled, skipping.")
-            continue
+        # if not app_config.get("enable", False):
+        #     logger.info(f"App '{app_name}' is disabled, skipping.")
+        #     continue
         if app_name in seen_app_names:
             logger.warning(
                 f"Duplicate app name '{app_name}' found in configuration, skipping subsequent instance."
@@ -393,44 +401,119 @@ def digest_config_data(config_data):
     return resolved_apps
 
 
-class ProcessManager:
-    processes: Dict[int, MultiprocessManager] = {}
+class WorkerManager:
+    amadeus_workers: Dict[int, MultiprocessManager] = {}
+    managed_ims: Dict[str, DockerRunManager] = {}
     watcher: Optional[asyncio.Task] = None
+    im_startup_tasks: set = set()
 
     @classmethod
     async def apply_config(cls, config_data):
+        config_changed = False
+
         apps = digest_config_data(config_data)
         logger.info(f"Applying configuration. {len(apps)} app(s) to configure.")
 
         # Store app name along with hash for better logging
         app_info_map = {}
+        im_info_map = {}
         for app_config in apps:
-            app_yaml = yaml.safe_dump(app_config, allow_unicode=True, sort_keys=True)
-            app_hash = hash(app_yaml)
-            app_name = app_config.get("name", f"UnnamedApp-{app_hash}")
-            app_info_map[app_hash] = {
-                "yaml": app_yaml,
-                "name": app_name,
-                "config": app_config,
-            }
+            if app_config.get("managed", False):
+                name_hash = md5(app_config["name"].encode()).hexdigest()[:10]
+                name = f"im-{name_hash}-{app_config['account']}"
+                im_info_map[name] = {
+                    "name": name,
+                    "config": app_config,
+                }
+            if app_config.get("enable", False):
+                app_yaml = yaml.safe_dump(app_config, allow_unicode=True, sort_keys=True)
+                app_hash = md5(app_yaml.encode()).hexdigest()[:10]
+                app_name = app_config.get("name", f"amadeus-{app_hash}")
+                app_info_map[app_name] = {
+                    "name": app_name,
+                    "yaml": app_yaml,
+                    "config": app_config,
+                }
 
-        prev_process_hashes = set(cls.processes.keys())
-        current_app_hashes = set(app_info_map.keys())
+        prev_ims = set(cls.managed_ims.keys())
+        current_ims = set(im_info_map.keys())
 
-        to_remove_hashes = prev_process_hashes - current_app_hashes
-        to_add_hashes = current_app_hashes - prev_process_hashes
+        to_remove_ims = prev_ims - current_ims
+        to_add_ims = current_ims - prev_ims
 
-        config_changed = False
+        for im_key in to_remove_ims:
+            if im_key in cls.managed_ims:
+                manager = cls.managed_ims[im_key]
+                await manager.close()
+                del cls.managed_ims[im_key]
 
-        for app_hash in to_remove_hashes:
-            if app_hash in cls.processes:
-                manager = cls.processes[app_hash]
+        if to_add_ims:
+
+            async def start_and_monitor_im(im_key):
+                nonlocal config_changed
+                manager = get_napcat_manager(
+                    config_name=im_key,
+                    account=im_info_map[im_key]["config"]["account"],
+                )
+                await manager.start()
+                cls.managed_ims[im_key] = manager
+
+                try:
+                    # Wait for a short period, then check the status
+                    await asyncio.sleep(0.2)
+                    while True:
+                        await manager.state_changed.wait()
+                        state = manager.current_state
+                        if state in ["LOGIN", "ONLINE"] or not manager.running:
+                            break
+
+                    if not manager.running:
+                        logger.error(
+                            f"IM service for '{im_key}' failed to start or terminated prematurely. Current state: {state}"
+                        )
+                        await manager.close()
+                        del cls.managed_ims[im_key]
+                        return
+
+                    im_info_map[im_key]["config"]["send_port"] = manager.ports[3000]
+                    config_changed = True
+                    logger.info(
+                        f"IM service for '{im_key}' started successfully on port {manager.ports[3000]}."
+                    )
+
+                except Exception as e:
+                    logger.error(f"Error during IM service startup for '{im_key}': {e}")
+                    await manager.close()
+                    if im_key in cls.managed_ims:
+                        del cls.managed_ims[im_key]
+
+            for im_key in to_add_ims:
+                task = asyncio.create_task(start_and_monitor_im(im_key))
+                cls.im_startup_tasks.add(task)
+                task.add_done_callback(cls.im_startup_tasks.discard)
+
+        logger.info(
+            f"IM services status: {len(cls.managed_ims)} IM service(s) now running."
+        )
+
+        prev_process_hashes = set(cls.amadeus_workers.keys())
+        current_app_hashes = set(
+            k for k in app_info_map.keys() if app_info_map[k]["config"].get("enable", False)
+        )
+
+        to_remove_amadeus = prev_process_hashes - current_app_hashes
+        to_add_amadeus = current_app_hashes - prev_process_hashes
+
+
+        for app_hash in to_remove_amadeus:
+            if app_hash in cls.amadeus_workers:
+                manager = cls.amadeus_workers[app_hash]
                 logger.info(f"Stopping service for app '{manager.name}'.")
                 await manager.close()
-                del cls.processes[app_hash]
+                del cls.amadeus_workers[app_hash]
 
-        if to_add_hashes:
-            for app_hash in to_add_hashes:
+        if to_add_amadeus:
+            for app_hash in to_add_amadeus:
                 app_detail = app_info_map[app_hash]
                 app_name = app_detail["name"]
                 app_yaml = app_detail["yaml"]
@@ -464,10 +547,10 @@ class ProcessManager:
                             break
                 else:
                     logger.info(f"Service for app '{app_name}' started successfully.")
-                    cls.processes[app_hash] = manager
+                    cls.amadeus_workers[app_hash] = manager
 
 
-        logger.info(f"System status: {len(cls.processes)} service(s) now running.")
+        logger.info(f"System status: {len(cls.amadeus_workers)} service(s) now running.")
 
         if cls.watcher is None or cls.watcher.done():
             cls.watcher = asyncio.create_task(cls.watch_processes())
@@ -477,19 +560,19 @@ class ProcessManager:
     @classmethod
     async def watch_processes(cls):
         """
-        Monitors managed processes and handles unexpected termination.
+        Monitors managed amadeus_workers and handles unexpected termination.
         """
         while True:
             try:
-                for app_hash, manager in list(cls.processes.items()):
+                for app_hash, manager in list(cls.amadeus_workers.items()):
                     if manager.current_state in [MultiprocessState.STOPPED, MultiprocessState.ERROR]:
                         logger.warning(
                             f"Service '{manager.name}' terminated unexpectedly with state: {manager.current_state}. "
-                            "It will be removed from active processes."
+                            "It will be removed from active amadeus_workers."
                         )
                         
                         await manager.close() # Ensure cleanup
-                        del cls.processes[app_hash]
+                        del cls.amadeus_workers[app_hash]
 
                         logger.warning(
                             f"Automatic restart for '{manager.name}' is not yet implemented. The service will remain stopped."

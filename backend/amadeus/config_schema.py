@@ -18,6 +18,22 @@ apps:
         minLength: 1
         title: 账号名称
         type: string
+      type:
+        title: 账号类型
+        type: string
+        enum:
+          - NapCatQQ
+        default: NapCatQQ
+      account:
+        default: ""
+        minLength: 1
+        title: 账号
+        type: string
+      managed:
+        default: false
+        title: 托管账号
+        type: boolean
+        description: 让 Amadeus 帮你启动和管理账号客户端。需要安装 Docker
       character:
         $dynamicEnum:
           source: characters
@@ -33,6 +49,15 @@ apps:
         uniqueItems: true
         description: 可以从已加的群中选择或手动输入群号
         suggestions: []
+      enabled_tools:
+        items:
+          type: string
+        title: 启用的功能
+        type: array
+        uniqueItems: true
+        suggestions:
+          - 撤回消息
+          - 群管理-禁言
       send_port:
         title: 通信端口
         default: 3000
@@ -40,15 +65,6 @@ apps:
         maximum: 65535
         minimum: 1
         type: integer
-      enabled_tools:
-        items:
-          type: string
-        title: 启用功能
-        type: array
-        uniqueItems: true
-        suggestions:
-          - 撤回消息
-          - 群管理-禁言
     required:
     - name
     type: object

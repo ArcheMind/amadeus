@@ -24,75 +24,83 @@ class WsConnector:
         self.event_handler: Optional[Callable] = None
         self._is_running = False
         self._conn: Optional[websockets.WebSocketClientProtocol] = None
+        self._listen_task: Optional[asyncio.Task] = None
+        self._connect_lock = asyncio.Lock()
 
     def register_event_handler(self, handler: Callable):
         self.event_handler = handler
 
+    async def _listen_loop(self) -> NoReturn:
+        while self._conn:
+            try:
+                message = await self._conn.recv()
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning(
+                    f"WebSocket connection to {red(self.uri)} closed. Reconnecting..."
+                )
+                break
+            try:
+                data = json.loads(message)
+                logger.trace(
+                    f"Received message: {yellow(json.dumps(data, indent=2, ensure_ascii=False))}"
+                )
+                if self.event_handler:
+                    await self.event_handler(data)
+            except json.JSONDecodeError:
+                logger.warning(f"Received invalid JSON message: {message}")
+                continue
+
     async def start(self):
         self._is_running = True
-        retry_count = 0
-        while self._is_running:
-            try:
-                retry_count += 1
-                if retry_count > 3:
-                    logger.error(
-                        f"Failed to connect to WebSocket server at {red(self.uri)} after 3 attempts. Stopping WsConnector."
-                    )
-                    self._is_running = False
-                    break
-                async with websockets.connect(self.uri) as websocket:
-                    self._conn = websocket
-                    logger.info(
-                        f"Successfully connected to WebSocket server at {green(self.uri)}"
-                    )
-                    while self._is_running:
-                        try:
-                            message = await websocket.recv()
-                            retry_count = 0  # Reset retry count on successful message reception
-                            data = json.loads(message)
-                            logger.trace(
-                                f"Received message: {yellow(json.dumps(data, indent=2, ensure_ascii=False))}"
-                            )
-                            if self.event_handler:
-                                await self.event_handler(data)
-                        except websockets.exceptions.ConnectionClosed:
-                            logger.warning(
-                                f"WebSocket connection to {red(self.uri)} closed. Reconnecting..."
-                            )
-                            break
-                        except json.JSONDecodeError:
-                            logger.warning(f"Received invalid JSON message: {message}")
-                            continue
-            except (
-                websockets.exceptions.WebSocketException,
-                ConnectionRefusedError,
-            ) as e:
-                logger.error(
-                    f"Failed to connect to WebSocket at {red(self.uri)}: {e}. Retrying in 5 seconds..."
+        try:
+            async with self._connect_lock:
+                self._conn = await websockets.connect(self.uri)
+                logger.info(
+                    f"Successfully connected to WebSocket server at {green(self.uri)}"
                 )
-                self._conn = None
-                await asyncio.sleep(5)
-            except Exception as e:
-                logger.error(f"An unexpected error occurred in WsConnector: {e}")
-                self._is_running = False
-                self._conn = None
+            self._listen_task = asyncio.create_task(self._listen_loop())
+
+        except (
+            websockets.exceptions.WebSocketException,
+            ConnectionRefusedError,
+        ) as e:
+            logger.error(
+                f"Failed to connect to WebSocket at {red(self.uri)}: {e}"
+            )
+            self._conn = None
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in WsConnector: {e}")
+            self._conn = None
+
+    async def join(self):
+        if self._listen_task:
+            await self._listen_task
 
     async def stop(self):
-        self._is_running = False
         if self._conn:
             await self._conn.close()
+            self._conn = None
+        if self._listen_task:
+            self._listen_task.cancel()
+            try:
+                await self._listen_task
+            except asyncio.CancelledError:
+                pass
+            self._listen_task = None
         logger.info(f"WebSocket connection to {green(self.uri)} stopped.")
 
     async def send(self, data: Dict[str, Any]) -> None:
-        if self._conn:
-            await self._conn.send(json.dumps(data, ensure_ascii=False))
-            logger.trace(
-                f"Sent message: {yellow(json.dumps(data, indent=2, ensure_ascii=False))}"
-            )
-        else:
-            logger.error(
-                f"Cannot send message, WebSocket connection to {red(self.uri)} is not active."
-            )
+        async with self._connect_lock:
+            if not self._conn:
+                raise RuntimeError(
+                    f"WebSocket connection to {self.uri} is not established."
+                )
+
+
+        await self._conn.send(json.dumps(data, ensure_ascii=False))
+        logger.trace(
+            f"Sent message: {yellow(json.dumps(data, indent=2, ensure_ascii=False))}"
+        )
 
 
 class InstantMessagingClient:
@@ -118,12 +126,11 @@ class InstantMessagingClient:
             self._ws_connector: WsConnector = WsConnector(api_base)
             self._response_futures: Dict[str, asyncio.Future] = {}
             self._is_listener_running = False
-            self._listener_task: Optional[asyncio.Task] = None
         self._initialized = True
 
-    def _ensure_listener_running(self):
+    async def _ensure_listener_running(self):
         if not self._is_listener_running:
-            self._listener_task = asyncio.create_task(self._ws_connector.start())
+            await self._ws_connector.start()
             self._ws_connector.register_event_handler(self._response_handler)
             self._is_listener_running = True
             logger.info(f"IM client listener started for {green(self.api_base)}")
@@ -139,7 +146,7 @@ class InstantMessagingClient:
     async def _send_request(
         self, action: str, params: Dict[str, Any], timeout: int = 10
     ) -> Dict[str, Any]:
-        self._ensure_listener_running()
+        await self._ensure_listener_running()
         echo = str(uuid.uuid4())
         future = asyncio.get_event_loop().create_future()
         self._response_futures[echo] = future
@@ -163,8 +170,7 @@ class InstantMessagingClient:
             self._response_futures.pop(echo, None)
 
     async def close(self):
-        if self._is_listener_running and self._listener_task:
-            self._listener_task.cancel()
+        if self._is_listener_running:
             await self._ws_connector.stop()
             self._is_listener_running = False
             logger.info(f"IM client for {green(self.api_base)} closed.")

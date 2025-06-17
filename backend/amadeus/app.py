@@ -178,6 +178,7 @@ async def _main():
     helper = WsConnector(uri)
     helper.register_event_handler(message_handler)
     await helper.start()
+    await helper.join()
     
 
 def main():

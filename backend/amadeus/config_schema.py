@@ -18,6 +18,7 @@ apps:
         minLength: 1
         title: 账号名称
         type: string
+        hidden: true
       type:
         title: 账号类型
         type: string
@@ -78,6 +79,7 @@ characters:
         default: 未命名角色
         minLength: 1
         type: string
+        hidden: true
       personality:
         title: 个性描述
         description: 建议包含角色的身份背景、性格、聊天的目的，不建议超过800字
@@ -128,6 +130,7 @@ idiolects:
         minLength: 1
         title: 名称
         type: string
+        hidden: true
       prompts:
         title: 提示词
         type: array
@@ -149,6 +152,11 @@ model_providers:
         minLength: 1
         title: 名称
         type: string
+        hidden: true
+      readme:
+        title: 说明
+        type: string
+        format: markdown
       base_url:
         default: https://babeltower.cn/v1
         description: 基础接入 URL
@@ -167,10 +175,6 @@ model_providers:
         items:
           type: string
         suggestions: []
-      readme:
-        title: 说明
-        type: string
-        format: markdown
     required:
     - name
     type: object
@@ -199,7 +203,7 @@ about:
         readOnly: true
       version:
         title: 版本
-        default: 0.8.0
+        default: 0.9.0
         type: string
         readOnly: true
       description:

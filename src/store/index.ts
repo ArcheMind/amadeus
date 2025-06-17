@@ -139,48 +139,82 @@ export const useStore = create<ConfigStore>((set, get) => ({
   
   // Actions
   initialize: async () => {
-    try {
-      set(state => ({ 
-        loading: { ...state.loading, classes: true } 
-      }));
-      
-      const baseUrl = await getApiBaseUrl();
-      const response = await fetch(`${baseUrl}/config/class`);
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch configuration classes');
-      }
+    let attempts = 0;
+    const maxAttempts = 1800;
+    const retryDelay = 3000; // 3 seconds
 
-      const classes = await response.json();
-      
-      const classesMap = classes.reduce((acc: Record<string, ConfigClass>, cls: ConfigClass) => {
-        // Preserve existing instance data if classes are re-fetched
-        const existingClass = get().configClasses?.[cls.name];
-        if (existingClass) {
-          cls.instances = existingClass.instances;
-          cls.data = existingClass.data;
-          cls.schema = existingClass.schema;
+    const attempt = async () => {
+      try {
+        if (attempts === 0) {
+          console.log("[Store] Starting configuration initialization...");
+          set(state => ({ 
+            loading: { ...state.loading, classes: true } 
+          }));
         }
-        acc[cls.name] = cls;
-        return acc;
-      }, {});
-      
-      set({ 
-        configClasses: classesMap,
-        loading: {
-          classes: false,
-          schema: false,
-          instances: false,
-          update: false
+        
+        console.log(`[Store] Attempt ${attempts + 1}: Getting API base URL...`);
+        const baseUrl = await getApiBaseUrl();
+        console.log(`[Store] API base URL: ${baseUrl}`);
+        
+        console.log(`[Store] Fetching configuration classes from: ${baseUrl}/config/class`);
+        const response = await fetch(`${baseUrl}/config/class`);
+        
+        console.log(`[Store] Response status: ${response.status} ${response.statusText}`);
+        
+        if (!response.ok) {
+          const errorText = await response.text().catch(() => 'Unable to read response');
+          console.error(`[Store] HTTP Error: ${response.status} ${response.statusText}`);
+          console.error(`[Store] Response body: ${errorText}`);
+          throw new Error(`Failed to fetch configuration classes: ${response.status} ${response.statusText}`);
         }
-      });
-    } catch (error) {
-      console.error('Failed to initialize config:', error);
-      set(state => ({ 
-        loading: { ...state.loading, classes: false } 
-      }));
-      throw error;
-    }
+
+        console.log("[Store] Parsing response JSON...");
+        const classes = await response.json();
+        console.log(`[Store] Received ${Array.isArray(classes) ? classes.length : 0} configuration classes:`, classes);
+        
+        const classesMap = classes.reduce((acc: Record<string, ConfigClass>, cls: ConfigClass) => {
+          // Preserve existing instance data if classes are re-fetched
+          const existingClass = get().configClasses?.[cls.name];
+          if (existingClass) {
+            cls.instances = existingClass.instances;
+            cls.data = existingClass.data;
+            cls.schema = existingClass.schema;
+          }
+          acc[cls.name] = cls;
+          return acc;
+        }, {});
+        
+        console.log("[Store] Configuration initialization completed successfully");
+        set({ 
+          configClasses: classesMap,
+          loading: {
+            classes: false,
+            schema: false,
+            instances: false,
+            update: false
+          }
+        });
+      } catch (error) {
+        attempts++;
+        console.error(`[Store] Attempt ${attempts} failed to initialize config:`, error);
+        
+        if (error instanceof TypeError && error.message.includes('fetch')) {
+          console.error("[Store] Network error - server may not be ready yet");
+        }
+        
+        if (attempts < maxAttempts) {
+          console.log(`[Store] Retrying in ${retryDelay / 1000} seconds... (${attempts}/${maxAttempts})`);
+          setTimeout(attempt, retryDelay);
+        } else {
+          console.error('[Store] Max retry attempts reached. Giving up.');
+          set(state => ({ 
+            loading: { ...state.loading, classes: false } 
+          }));
+          throw error;
+        }
+      }
+    };
+    await attempt();
   },
   
   fetchSchema: async (className, instanceName = null) => {
@@ -536,16 +570,29 @@ export const useStore = create<ConfigStore>((set, get) => ({
 
 // Helper function to get API base URL, aware of Electron/browser environments
 async function getApiBaseUrl() {
+  console.log("[Store] Getting API base URL...");
+  
   // @ts-ignore
   if (window.api) {
+    console.log("[Store] Running in Electron environment");
     try {
       // @ts-ignore
-      const port = await window.api.invoke('get-api-port');
-      if (port) return `http://localhost:${port}`;
+      const port = await window.api.getApiPort();
+      console.log("[Store] Retrieved port from Electron:", port);
+      if (port) {
+        const url = `http://localhost:${port}`;
+        console.log("[Store] Using Electron API URL:", url);
+        return url;
+      }
     } catch (error) {
-      console.error('Failed to get API port from Electron, falling back to dev port.', error);
+      console.error('[Store] Failed to get API port from Electron, falling back to dev port.', error);
     }
+  } else {
+    console.log("[Store] Running in browser environment");
   }
+  
   // Fallback for browser development or if Electron IPC fails
-  return `http://localhost:38178`;
+  const fallbackUrl = `http://localhost:38178`;
+  console.log("[Store] Using fallback API URL:", fallbackUrl);
+  return fallbackUrl;
 }

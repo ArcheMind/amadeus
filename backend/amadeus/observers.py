@@ -77,18 +77,17 @@ class IMObserver:
 
     async def update(self, config: Dict[str, Any]) -> Dict[str, Any]:
         logger.info(f"{yellow('--- IMObserver applying configuration ---')}")
-        
-        apps = digest_config_data(config)
+
         im_info_map = {}
-        for app_config in apps:
+        for app_config in config.get("apps", []):
             if app_config.get("managed", False):
                 name_hash = md5(app_config["name"].encode()).hexdigest()[:10]
-                name = f"im-{name_hash}-{app_config['account']}"
+                name = f"im-{name_hash}-{app_config.get('account', 'default')}"
                 im_info_map[name] = {
                     "name": name,
-                    "config": app_config,
+                    "config": app_config,  # Direct reference to original app config
                 }
-        
+
         prev_ims = set(self.managed_ims.keys())
         current_ims = set(im_info_map.keys())
 
@@ -106,10 +105,10 @@ class IMObserver:
         if to_add_ims:
             logger.info(f"Adding {len(to_add_ims)} IM manager(s): {', '.join(map(blue, to_add_ims))}")
             for im_key in to_add_ims:
-                im_config = im_info_map[im_key]["config"]
+                app_ref = im_info_map[im_key]["config"]  # Direct reference
                 manager = get_napcat_manager(
                     config_name=im_key,
-                    account=im_config["account"],
+                    account=app_ref["account"],
                 )
                 await manager.start()
                 self.managed_ims[im_key] = manager
@@ -122,37 +121,15 @@ class IMObserver:
                         logger.error(f"Failed to start managed IM {blue(im_key)}. It has been removed.")
                         await manager.close()
                         del self.managed_ims[im_key]
-                        # Update config to reflect failure
-                        for app in config.get("apps", []):
-                            if app.get("name") == im_config["name"]:
-                                app["managed"] = False
-                                # maybe add a status field
-                                app["_managed_status"] = "Failed to start"
+                        # Update config to reflect failure, using the direct reference
+                        app_ref["managed"] = False
+                        app_ref["_managed_status"] = "Failed to start"
                     else:
-                         for app in config.get("apps", []):
-                            if app.get("name") == im_config["name"]:
-                                app["onebot_server"] = f"ws://localhost:{manager.ports[3001]}"
-                                logger.info(f"Managed IM {blue(im_key)} started. App {blue(im_config['name'])} configured with onebot_server {app['onebot_server']}")
-
-                except Exception as e:
-                    logger.error(f"Exception starting IM {blue(im_key)}: {e}")
-                    await manager.close()
-                    if im_key in self.managed_ims:
-                        del self.managed_ims[im_key]
-                    for app in config.get("apps", []):
-                        if app.get("name") == im_config["name"]:
-                            app["managed"] = False
-                            app["_managed_status"] = f"Exception: {e}"
-        
-        logger.debug("Updating onebot_server in apps...")
-        for im_key, manager in self.managed_ims.items():
-            if im_key not in im_info_map: continue
-            im_config = im_info_map[im_key]["config"]
-            for app in config.get("apps", []):
-                if app.get("name") == im_config["name"]:
-                    if 3001 in manager.ports:
-                        app["onebot_server"] = f"ws://localhost:{manager.ports[3001]}"
-        
+                        # Update config on success, using the direct reference
+                        app_ref["onebot_server"] = f"ws://localhost:{manager.ports[3001]}"
+                        logger.info(f"Managed IM {blue(im_key)} started. App {blue(app_ref['name'])} configured with onebot_server {app_ref['onebot_server']}")
+                finally:
+                    pass
         return config
 
     async def close(self):
@@ -173,17 +150,18 @@ class AmadeusObserver:
         logger.info(f"{yellow('--- AmadeusObserver applying configuration ---')}")
 
         app_info_map = {}
-        apps = digest_config_data(config)
-        for app_config in apps:
-            if app_config.get("enable", False):
-                app_yaml = yaml.safe_dump(app_config, allow_unicode=True, sort_keys=True)
+        for original_app_config in config.get("apps", []):
+            if original_app_config.get("enable", False):
+                processed_app_config = embed_config(original_app_config, config)
+                app_yaml = yaml.safe_dump(processed_app_config, allow_unicode=True, sort_keys=True)
                 app_hash = md5(app_yaml.encode()).hexdigest()[:10]
                 name = f"amadeus-{app_hash}"
                 app_info_map[name] = {
                     "name": name,
-                    "config": app_config,
+                    "original_config": original_app_config,
+                    "processed_yaml": app_yaml,
                 }
-        
+
         prev_process_hashes = set(self.amadeus_workers.keys())
         current_app_hashes = set(app_info_map.keys())
 
@@ -197,15 +175,14 @@ class AmadeusObserver:
                     manager = self.amadeus_workers[app_hash]
                     await manager.close()
                     del self.amadeus_workers[app_hash]
-        
+
         if to_add_amadeus:
             logger.info(f"Starting {len(to_add_amadeus)} Amadeus worker(s): {', '.join(map(blue, to_add_amadeus))}")
             for app_hash in to_add_amadeus:
                 app_detail = app_info_map[app_hash]
                 app_name = app_detail["name"]
-                app_yaml = yaml.safe_dump(
-                    app_detail["config"], allow_unicode=True, sort_keys=True
-                )
+                app_yaml = app_detail["processed_yaml"]
+                original_app_ref = app_detail["original_config"]
 
                 manager = MultiprocessManager(
                     name=app_name,
@@ -214,24 +191,20 @@ class AmadeusObserver:
                     stream_logs=True,
                 )
                 await manager.start()
-                
+
                 await asyncio.sleep(3)
 
                 if manager.current_state != MultiprocessState.RUNNING:
                     await manager.close()
                     logger.error(f"Failed to start Amadeus worker {blue(app_name)}. It has been disabled.")
-                    
-                    for app_config_item in config.get("apps", []):
-                        if app_config_item.get("name") == app_detail["config"]["name"]:
-                            app_config_item["enable"] = False
-                            break
+
+                    original_app_ref["enable"] = False
                 else:
                     self.amadeus_workers[app_hash] = manager
-        
+
         if self.watcher is None or self.watcher.done():
             logger.info("Process watcher is not running. Starting it now.")
             self.watcher = asyncio.create_task(self.watch_processes())
-
         return config
 
     async def watch_processes(self):

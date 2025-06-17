@@ -7,7 +7,6 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
-import asyncio
 import multiprocessing
 import copy
 import fastapi
@@ -17,12 +16,7 @@ from amadeus.config_schema import CONFIG_SCHEMA, EXAMPLE_CONFIG
 from amadeus.config_router import ConfigRouter
 from amadeus.config_persistence import ConfigPersistence
 from amadeus.observers import AmadeusObserver, IMObserver
-import yaml
 from fastapi.middleware.cors import CORSMiddleware
-
-
-# 设置multiprocessing使用spawn方法
-multiprocessing.set_start_method('spawn', force=True)
 
 
 @asynccontextmanager
@@ -34,8 +28,14 @@ async def lifespan(_: fastapi.FastAPI):
         # Startup event
         logger.info(f"{yellow('--- Application starting up ---')}")
         config_data = config_persistence.load()
-        logger.info("Applying initial configuration...")
-        config_data, _ = await WorkerManager.apply_config(config_data)
+        for app in config_data.get("apps", []):
+            if not isinstance(app, dict):
+                continue
+            if app.get("enabled", False):
+                app["enabled"] = False
+            if app.get("managed", False):
+                app["managed"] = False
+        config_persistence.save(config_data)
         logger.info(f"{yellow('--- Application startup complete ---')}")
         yield  # Yield control back to the FastAPI app
     finally:
@@ -76,10 +76,11 @@ config_persistence = ConfigPersistence(EXAMPLE_CONFIG)
 
 async def save_config_data(config_data: dict):
     logger.info(f"{yellow('--- User triggered configuration save ---')}")
-    modified_config_data, config_changed = await WorkerManager.apply_config(config_data)
+    original_config = copy.deepcopy(config_data)
+    modified_config_data = await WorkerManager.apply_config(config_data)
     config_persistence.save(modified_config_data)
     logger.info(f"{yellow('--- Configuration saved and applied ---')}")
-    return config_changed
+    return original_config != modified_config_data
 
 
 # Initialize the config router with schema and data getter/setter
@@ -270,17 +271,11 @@ class WorkerManager:
     async def apply_config(cls, config_data):
         logger.info(f"{yellow('--- Applying configuration ---')}")
         
-        config_changed = False
-        original_config = copy.deepcopy(config_data)
-        
         for observer in cls.observers:
             config_data = await observer.update(config_data)
-            
-        if original_config != config_data:
-            config_changed = True
 
         logger.info(f"{yellow('--- Configuration application finished ---')}")
-        return config_data, config_changed
+        return config_data
 
 
 class InterceptHandler(logging.Handler):
@@ -315,6 +310,9 @@ def get_free_port():
         return s.getsockname()[1]
 
 if __name__ == "__main__":
+    # 设置multiprocessing使用spawn方法
+    # 必须在 "if __name__ == '__main__':" 块中调用
+    multiprocessing.set_start_method('spawn', force=True)
     import uvicorn
     setup_loguru()
 
@@ -324,4 +322,7 @@ if __name__ == "__main__":
     else:
         port = int(port)
     logger.info(f"Starting Amadeus server at http://localhost:{port}")
-    uvicorn.run(app, host="0.0.0.0", port=port) 
+    uvicorn.run(
+        app, host="0.0.0.0", port=port,
+        access_log=False,
+    ) 

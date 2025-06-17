@@ -36,7 +36,7 @@ async def user_loop():
                 logger.info(f"Processing event for target: {green(chat_type)} {blue(target_id)}")
 
                 qq_chat = QQChat(
-                    api_base=f"ws://localhost:{AMADEUS_CONFIG.send_port}",
+                    api_base=AMADEUS_CONFIG.onebot_server,
                     chat_type=chat_type,
                     target_id=target_id,
                 )
@@ -172,8 +172,7 @@ async def _main():
         if daemon not in _TASKS:
             logger.info(f"Starting daemon: {green(daemon.__name__)}")
             _TASKS[daemon] = asyncio.create_task(daemon())
-    port = AMADEUS_CONFIG.send_port
-    uri = f"ws://localhost:{port}/"
+    uri = AMADEUS_CONFIG.onebot_server
     logger.info(f"Connecting to IM client at {green(uri)}")
     helper = WsConnector(uri)
     helper.register_event_handler(message_handler)

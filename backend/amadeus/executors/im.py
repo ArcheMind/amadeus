@@ -59,6 +59,7 @@ class WsConnector:
                     f"Successfully connected to WebSocket server at {green(self.uri)}"
                 )
             self._listen_task = asyncio.create_task(self._listen_loop())
+            return True
 
         except (
             websockets.exceptions.WebSocketException,
@@ -71,6 +72,7 @@ class WsConnector:
         except Exception as e:
             logger.error(f"An unexpected error occurred in WsConnector: {e}")
             self._conn = None
+        return False
 
     async def join(self):
         if self._listen_task:

@@ -31,9 +31,13 @@ apps:
         type: string
       managed:
         default: false
-        title: 托管账号
+        title: 托管客户端
         type: boolean
         description: 让 Amadeus 帮你启动和管理账号客户端。需要安装 Docker
+      onebot_server:
+        title: Onebot接口地址
+        type: string
+        format: uri
       character:
         $dynamicEnum:
           source: characters
@@ -58,13 +62,6 @@ apps:
         suggestions:
           - 撤回消息
           - 群管理-禁言
-      send_port:
-        title: 通信端口
-        default: 3000
-        description: 填入onebot协议的ws服务器端口。正确配置后，Amadeus可以自动获取到已加的群号。更多信息请参考[OneBot标准](https://onebot.dev/)。
-        maximum: 65535
-        minimum: 1
-        type: integer
     required:
     - name
     type: object
@@ -300,7 +297,6 @@ apps:
   name: 思思的QQ
   character: 思思
   protocol: onebot
-  send_port: 3010
   enabled_groups:
   - '119851258'
   enabled_tools:

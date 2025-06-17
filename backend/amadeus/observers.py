@@ -131,8 +131,8 @@ class IMObserver:
                     else:
                          for app in config.get("apps", []):
                             if app.get("name") == im_config["name"]:
-                                app["send_port"] = manager.ports[3001]
-                                logger.info(f"Managed IM {blue(im_key)} started. App {blue(im_config['name'])} send_port updated to {green(app['send_port'])}.")
+                                app["onebot_server"] = f"ws://localhost:{manager.ports[3001]}"
+                                logger.info(f"Managed IM {blue(im_key)} started. App {blue(im_config['name'])} configured with onebot_server {app['onebot_server']}")
 
                 except Exception as e:
                     logger.error(f"Exception starting IM {blue(im_key)}: {e}")
@@ -144,14 +144,14 @@ class IMObserver:
                             app["managed"] = False
                             app["_managed_status"] = f"Exception: {e}"
         
-        logger.debug("Updating send_port for apps with managed IMs...")
+        logger.debug("Updating onebot_server in apps...")
         for im_key, manager in self.managed_ims.items():
             if im_key not in im_info_map: continue
             im_config = im_info_map[im_key]["config"]
             for app in config.get("apps", []):
                 if app.get("name") == im_config["name"]:
                     if 3001 in manager.ports:
-                        app["send_port"] = manager.ports[3001]
+                        app["onebot_server"] = f"ws://localhost:{manager.ports[3001]}"
         
         return config
 

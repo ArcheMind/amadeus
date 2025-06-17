@@ -30,7 +30,7 @@ class Character(pydantic.BaseModel):
 class Config(pydantic.BaseModel):
     name: str
     protocol: str
-    send_port: int
+    onebot_server: str
     character: Character
     enable: bool
     enabled_groups: list[str]

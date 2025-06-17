@@ -100,7 +100,6 @@ async def app_enhancer(
     Enhance schema by resolving joined groups.
     This is a placeholder for future implementation.
     """
-    instances = config_data.get(class_name, [])
     if not instance_name:
         return schema
 
@@ -110,7 +109,7 @@ async def app_enhancer(
 
     schema = copy.deepcopy(schema)
 
-    send_port = instance.get("send_port")
+    onebot_server = instance.get("onebot_server", "")
 
     if instance.get("managed", False):
         im_name = f"im-{md5(instance_name.encode()).hexdigest()[:10]}-{instance.get('account', 'default')}"
@@ -124,6 +123,7 @@ async def app_enhancer(
             backend_port = im_manager.ports.get(6099)
             if 3001 in im_manager.ports:
                 send_port = im_manager.ports.get(3001)
+                onebot_server = f"ws://localhost:{send_port}"
             if not im_manager.running:
                 manager_status = "🛑已停止"
             elif im_manager.current_state == "LOGIN":
@@ -134,14 +134,26 @@ async def app_enhancer(
                 manager_status = f"🔵状态: {im_manager.current_state}"
         else:
             pass
+        schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
+        schema["schema"]["properties"]["onebot_server"]["hidden"] = True
         schema["schema"]["properties"]["managed"]["description"] = manager_status
 
-    if send_port:
+    if onebot_server:
+        if not instance.get("managed", False):
+            from amadeus.executors.im import WsConnector
+
+            logger.info(f"Enhancer: Connecting to Onebot server at {green(onebot_server)} for app {blue(instance_name)}")
+            connector = WsConnector(onebot_server)
+            if await connector.start():
+                schema["schema"]["properties"]["onebot_server"]["description"] = f"🟢已连接"
+            else:
+                schema["schema"]["properties"]["onebot_server"]["description"] = f"🔴连接失败"
+
         from amadeus.executors.im import InstantMessagingClient
 
-        im = InstantMessagingClient(api_base=f"ws://localhost:{send_port}")
+        im = InstantMessagingClient(api_base=onebot_server)
         try:
-            logger.info(f"Enhancer: Fetching joined groups for app {blue(instance_name)} from {green(f'ws://localhost:{send_port}')}")
+            logger.info(f"Enhancer: Fetching joined groups for app {blue(instance_name)} from {green(onebot_server)}")
             groups = await im.get_joined_groups()
             if groups:
                 logger.info(f"Enhancer: Successfully fetched {green(len(groups))} groups for app {blue(instance_name)}.")
@@ -151,7 +163,7 @@ async def app_enhancer(
                 ]
             return schema
         except Exception as e:
-            logger.error(f"Enhancer: Failed to fetch joined groups for app {blue(instance_name)} from {green(f'ws://localhost:{send_port}')}: {red(str(e))}")
+            logger.error(f"Enhancer: Failed to fetch joined groups for app {blue(instance_name)} from {green(onebot_server)}: {red(str(e))}")
             pass
 
     return schema
@@ -163,7 +175,6 @@ async def model_list_enhancer(
     class_name: str,
     instance_name: Optional[str] = None,
 ):
-    instances = config_data.get(class_name, [])
     instance = find_item(config_data, class_name, instance_name)
     if not instance:
         return schema

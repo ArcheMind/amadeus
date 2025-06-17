@@ -385,7 +385,7 @@ const FormRenderer: React.FC<FormRendererProps> = ({
 
       if (field.format === 'uri') {
         rules.pattern = {
-          value: /^https?:\/\/.+/,
+          value: /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/.+/,
           message: t('validation.uri')
         };
       }
@@ -854,27 +854,30 @@ const FormRenderer: React.FC<FormRendererProps> = ({
       case 'object':
         return (
           <div className="space-y-4 border border-border rounded-md p-4">
-            {field.properties && Object.entries(field.properties).map(([subKey, subField]: [string, any]) => (
-              <div key={subKey} className="space-y-2">
-                <label 
-                  htmlFor={`${fieldPath}.${subKey}`} 
-                  className="block text-sm font-medium cursor-default"
-                  onClick={(e) => e.preventDefault()}
-                >
-                  {subField.title || subKey}
-                  {field.required?.includes(subKey) && <span className="text-error ml-1">*</span>}
-                </label>
-                {subField.description && (
-                  <div className="text-xs text-muted-foreground mb-2">
-                    {parseInlineMarkdown(subField.description)}
-                  </div>
-                )}
-                {renderField(subKey, subField, fieldPath)}
-                {errors[`${fieldPath}.${subKey}`] && (
-                  <p className="text-sm text-error">{errors[`${fieldPath}.${subKey}`]?.message?.toString()}</p>
-                )}
-              </div>
-            ))}
+            {field.properties && Object.entries(field.properties).map(([subKey, subField]: [string, any]) => {
+              if (subField.hidden) return null;
+              return (
+                <div key={subKey} className="space-y-2">
+                  <label 
+                    htmlFor={`${fieldPath}.${subKey}`} 
+                    className="block text-sm font-medium cursor-default"
+                    onClick={(e) => e.preventDefault()}
+                  >
+                    {subField.title || subKey}
+                    {field.required?.includes(subKey) && <span className="text-error ml-1">*</span>}
+                  </label>
+                  {subField.description && (
+                    <div className="text-xs text-muted-foreground mb-2">
+                      {parseInlineMarkdown(subField.description)}
+                    </div>
+                  )}
+                  {renderField(subKey, subField, fieldPath)}
+                  {errors[`${fieldPath}.${subKey}`] && (
+                    <p className="text-sm text-error">{errors[`${fieldPath}.${subKey}`]?.message?.toString()}</p>
+                  )}
+                </div>
+              );
+            })}
           </div>
         );
       
@@ -897,29 +900,32 @@ const FormRenderer: React.FC<FormRendererProps> = ({
 
   return (
     <form ref={formRef} onSubmit={handleFormSubmit} className="space-y-6">
-      {schema && schema.properties && Object.entries(schema.properties).map(([key, field]: [string, any]) => (
-        <div key={key} className="space-y-2">
-          <label 
-            htmlFor={key} 
-            className="block text-sm font-medium cursor-default"
-            onClick={(e) => e.preventDefault()}
-          >
-            {field.title || key}
-            {isFieldRequired(key) && <span className="text-error ml-1">*</span>}
-          </label>
-          {field.description && (
-            <div className="text-xs text-muted-foreground mb-2">
-              {parseInlineMarkdown(field.description)}
-            </div>
-          )}
-          <div className="relative">
-            {renderField(key, field)}
-            {errors[key] && (
-              <p className="text-sm text-error mt-1">{errors[key]?.message?.toString()}</p>
+      {schema && schema.properties && Object.entries(schema.properties).map(([key, field]: [string, any]) => {
+        if (field.hidden) return null;
+        return (
+          <div key={key} className="space-y-2">
+            <label 
+              htmlFor={key} 
+              className="block text-sm font-medium cursor-default"
+              onClick={(e) => e.preventDefault()}
+            >
+              {field.title || key}
+              {isFieldRequired(key) && <span className="text-error ml-1">*</span>}
+            </label>
+            {field.description && (
+              <div className="text-xs text-muted-foreground mb-2">
+                {parseInlineMarkdown(field.description)}
+              </div>
             )}
+            <div className="relative">
+              {renderField(key, field)}
+              {errors[key] && (
+                <p className="text-sm text-error mt-1">{errors[key]?.message?.toString()}</p>
+              )}
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </form>
   );
 };
@@ -1232,6 +1238,8 @@ const ArrayField: React.FC<ArrayFieldProps> = ({
               
               <div className="space-y-3">
                 {field.items.properties && Object.entries(field.items.properties).map(([subKey, subField]: [string, any]) => {
+                  if (subField.hidden) return null;
+
                   const subFieldPath = `${fieldPath}.${index}.${subKey}`;
                   const subError = errors[subFieldPath];
                   

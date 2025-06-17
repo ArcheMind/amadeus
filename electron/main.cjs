@@ -161,11 +161,22 @@ async function startServer(config = defaultServerConfig) {
     serverProcess.on('close', (code) => {
       console.log('[Server] Process exited with code', code);
       if (code !== 0 && !killer.isQuitting) {
-        console.log('[Server] Restarting server...');
+        console.log('[Server] Restarting server in 5 seconds...');
         serverStarted = false;
         serverPort = null;
         killer.setServerProcess(null);
-        startServer(serverConfig).then(resolve).catch(reject);
+        setTimeout(() => {
+          startServer(serverConfig)
+            .then(newPort => {
+                console.log('[Server] Server restarted successfully on port:', newPort);
+                if (mainWindow) {
+                    mainWindow.webContents.send('backend-port', newPort);
+                }
+            })
+            .catch(err => {
+                console.error('[Server] Failed to restart server:', err);
+            });
+        }, 5000);
       } else {
         serverStarted = false;
         serverPort = null;
@@ -200,18 +211,6 @@ function registerIPCHandlers() {
 }
 
 async function createWindow() {
-  // 启动服务器（如果尚未启动）并获取端口
-  try {
-    console.log('[App] Starting server...');
-    serverPort = await startServer();
-    serverStarted = true;
-    console.log('[App] Server started successfully on port:', serverPort);
-  } catch (error) {
-    console.error('[App] Failed to start server:', error);
-    app.quit();
-    return;
-  }
-
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -242,8 +241,19 @@ async function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   registerIPCHandlers();
+  // 启动服务器（如果尚未启动）并获取端口
+  try {
+    console.log('[App] Starting server...');
+    serverPort = await startServer();
+    serverStarted = true;
+    console.log('[App] Server started successfully on port:', serverPort);
+  } catch (error) {
+    console.error('[App] Failed to start server:', error);
+    app.quit();
+    return;
+  }
   createWindow();
 });
 

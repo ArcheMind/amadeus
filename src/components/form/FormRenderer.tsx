@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useLayoutEffect } from 'react';
 import { useForm, useFieldArray } from 'react-hook-form';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
@@ -11,6 +11,9 @@ import { useTranslation } from 'react-i18next';
 import { Badge } from '../ui/Badge';
 import { cn } from '../../lib/utils';
 import { useStore } from '../../store';
+
+// Store scroll position between re-renders caused by key changes.
+let lastScrollPosition = 0;
 
 // Add type declaration for window.electronAPI
 declare global {
@@ -36,12 +39,28 @@ const FormRenderer: React.FC<FormRendererProps> = ({
 }) => {
   const { t } = useTranslation();
   const { selectClass, selectInstance } = useStore();
+  const formRef = useRef<HTMLFormElement>(null);
 
   const { register, handleSubmit: reactHookFormSubmit, setValue, watch, formState: { errors, isSubmitting }, reset, control } = useForm({
     defaultValues: initialData,
     mode: 'onSubmit',
     reValidateMode: 'onChange'
   });
+
+  useLayoutEffect(() => {
+    const scrollContainer = formRef.current?.closest('main');
+    if (scrollContainer) {
+      // Restore scroll position on mount
+      scrollContainer.scrollTop = lastScrollPosition;
+    }
+
+    // Save scroll position on unmount
+    return () => {
+      if (scrollContainer) {
+        lastScrollPosition = scrollContainer.scrollTop;
+      }
+    };
+  }, []);
 
   // Reset form when initialData changes
   useEffect(() => {
@@ -877,7 +896,7 @@ const FormRenderer: React.FC<FormRendererProps> = ({
   };
 
   return (
-    <form onSubmit={handleFormSubmit} className="space-y-6">
+    <form ref={formRef} onSubmit={handleFormSubmit} className="space-y-6">
       {schema && schema.properties && Object.entries(schema.properties).map(([key, field]: [string, any]) => (
         <div key={key} className="space-y-2">
           <label 

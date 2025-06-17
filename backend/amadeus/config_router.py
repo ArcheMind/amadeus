@@ -4,6 +4,7 @@ from urllib.parse import quote, unquote
 from fastapi import APIRouter, HTTPException, Response
 from jsonschema import validate, exceptions as jsonschema_exceptions
 from loguru import logger
+from pydantic import ValidationError
 
 
 def create_dynamic_enum_enhancer():
@@ -115,7 +116,7 @@ class ConfigRouter:
     async def _update_config_data(self, new_data: Dict[str, Any]):
         """Update the configuration data using the data setter."""
         changed = await self._data_setter(new_data)
-        return not changed
+        return changed
 
     def register_schema_enhancer(self, class_name: str, enhancer):
         """
@@ -336,48 +337,50 @@ class ConfigRouter:
             class_name: str, instance_name: str, instance_data: Dict[str, Any]
         ):
             """Update an existing instance of a configuration class."""
-            instance_name = unquote(instance_name)
-            if class_name not in self.config_schema:
+            try:
+                instance_name = unquote(instance_name)
+                if class_name not in self.config_schema:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Configuration class '{class_name}' not found",
+                    )
+
+                if not self.config_schema[class_name].get("isList", False):
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Configuration class '{class_name}' is not a list type",
+                    )
+
+                schema = await self._get_class_schema(class_name, instance_name)
+                self._fill_defaults_recursive(schema, instance_data)
+                await self._validate_instance(class_name, instance_data, schema=schema)
+
+                if instance_data.get("name") != instance_name:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Instance name in URL must match name in data",
+                    )
+
+                # Get current data
+                current_data = self.config_data
+
+                # Find and update instance
+                existing_instances = current_data.get(class_name, [])
+                for i, instance in enumerate(existing_instances):
+                    if instance.get("name") == instance_name:
+                        current_data[class_name][i] = instance_data
+                        if await self._update_config_data(current_data):
+                            return instance_data
+                        else:
+                            # if no changes are made, it is still a success
+                            return instance_data
+                
                 raise HTTPException(
-                    status_code=404,
-                    detail=f"Configuration class '{class_name}' not found",
+                    status_code=404, detail=f"Instance '{instance_name}' not found"
                 )
-
-            if not self.config_schema[class_name].get("isList", False):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Configuration class '{class_name}' is not a list type",
-                )
-
-            schema = await self._get_class_schema(class_name, instance_name)
-            self._fill_defaults_recursive(schema, instance_data)
-            await self._validate_instance(class_name, instance_data, schema=schema)
-
-            if instance_data.get("name") != instance_name:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Instance name in URL must match name in data",
-                )
-
-            # Get current data
-            current_data = self.config_data
-
-            # Find and update instance
-            existing_instances = current_data.get(class_name, [])
-            for i, instance in enumerate(existing_instances):
-                if instance.get("name") == instance_name:
-                    current_data[class_name][i] = instance_data
-                    if await self._update_config_data(current_data):
-                        return instance_data
-                    else:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Update of instance '{instance_name}' failed",
-                        )
-
-            raise HTTPException(
-                status_code=404, detail=f"Instance '{instance_name}' not found"
-            )
+            except ValidationError as e:
+                logger.error(f"Validation error updating instance '{instance_name}': {e}")
+                raise HTTPException(status_code=400, detail=str(e))
 
         @self.router.delete("/class/{class_name}/instances/{instance_name}")
         async def delete_instance(class_name: str, instance_name: str):

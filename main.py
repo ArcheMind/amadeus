@@ -252,6 +252,31 @@ def find_item(config_data, section_key, item_name):
             return item
     return None
 
+def embed_config_item(current_item, config_data, section_key):
+    def resolve_and_embed(value, source_section):
+        if isinstance(value, str):
+            embedded_item = find_item(config_data, source_section, value)
+            return embed_config_item(embedded_item, config_data, source_section) if embedded_item else None
+        elif isinstance(value, list):
+            return [resolve_and_embed(v, source_section) for v in value]
+        return value
+
+    if not current_item:
+        return None
+
+    embedded_item = copy.deepcopy(current_item)
+    for key, value in embedded_item.items():
+        if key.endswith("_provider"):
+            source_section = "model_providers"
+            embedded_item[key] = resolve_and_embed(value, source_section)
+        elif key == "character":
+            source_section = "characters"
+            embedded_item[key] = resolve_and_embed(value, source_section)
+        elif key == "idiolect":
+            source_section = "idiolects"
+            embedded_item[key] = resolve_and_embed(value, source_section)
+    return embedded_item
+
 class WorkerManager:
     observers: list = [IMObserver(), AmadeusObserver()]
 
@@ -306,11 +331,6 @@ def get_free_port():
 if __name__ == "__main__":
     import uvicorn
     setup_loguru()
-
-    port = os.getenv("PORT", "")
-    if not port.isdigit():
-        port = get_free_port()
-    else:
-        port = int(port)
+    port = get_free_port()
     logger.info(f"Starting Amadeus server at http://localhost:{port}")
     uvicorn.run(app, host="0.0.0.0", port=port) 

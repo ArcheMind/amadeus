@@ -22,7 +22,7 @@ export const Switch: React.FC<SwitchProps> = ({
   isLoading = false,
   ...props
 }) => {
-  const isEffectivelyDisabled = disabled || (isLoading && checked);
+  const isEffectivelyDisabled = disabled || isLoading;
 
   return (
     <label
@@ -48,14 +48,17 @@ export const Switch: React.FC<SwitchProps> = ({
         className={cn(
           "inline-block h-4 w-4 transform rounded-full bg-background transition-transform",
           checked ? "translate-x-6" : "translate-x-1",
-          isLoading && checked ? 'opacity-0' : 'opacity-100'
+          isLoading ? 'opacity-0' : 'opacity-100'
         )}
       />
-      {isLoading && checked && (
+      {isLoading && (
         <span
-          className="absolute flex h-4 w-4 items-center justify-center transform translate-x-6"
+          className={cn(
+            "absolute flex h-4 w-4 items-center justify-center transform",
+            checked ? "translate-x-6" : "translate-x-1"
+          )}
         >
-          <Loader2 className="h-4 w-4 animate-spin text-primary-foreground" />
+          <Loader2 className={cn("h-4 w-4 animate-spin", checked ? "text-primary-foreground" : "text-primary")} />
         </span>
       )}
     </label>

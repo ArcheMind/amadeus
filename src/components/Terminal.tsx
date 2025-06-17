@@ -16,12 +16,23 @@ interface TerminalProps {
 const Terminal: React.FC<TerminalProps> = ({ isVisible }) => {
   const [logs, setLogs] = useState<string[]>([]);
   const logsEndRef = useRef<null | HTMLDivElement>(null);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
 
   useEffect(() => {
     if (window.api) {
+      // 获取历史日志
+      window.api.getHistoricalLogs().then((historicalLogs: string) => {
+        if (historicalLogs) {
+          setLogs((prevLogs) => [...prevLogs, historicalLogs]);
+        }
+      });
+      
+      // 监听实时日志
       const cleanup = window.api.receive('backend-log', (log: string) => {
-        const decodedLog = decodeURIComponent(escape(log));
-        setLogs((prevLogs) => [...prevLogs, decodedLog]);
+        if (isInitialLoad) {
+          setIsInitialLoad(false);
+        }
+        setLogs((prevLogs) => [...prevLogs, log]);
       });
 
       return cleanup;
@@ -29,8 +40,9 @@ const Terminal: React.FC<TerminalProps> = ({ isVisible }) => {
   }, []);
 
   useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [logs]);
+    // 初始加载时，立即滚动到底部；后续更新则平滑滚动
+    logsEndRef.current?.scrollIntoView({ behavior: isInitialLoad ? 'auto' : 'smooth' });
+  }, [logs, isInitialLoad]);
 
   return (
     <div className={`terminal-modal ${isVisible ? 'visible' : ''}`}>

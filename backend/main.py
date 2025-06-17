@@ -458,11 +458,8 @@ class WorkerManager:
                 try:
                     # Wait for a short period, then check the status
                     await asyncio.sleep(0.2)
-                    while True:
+                    while manager.current_state not in ["LOGIN", "ONLINE"] and manager.running:
                         await manager.state_changed.wait()
-                        state = manager.current_state
-                        if state in ["LOGIN", "ONLINE"] or not manager.running:
-                            break
 
                     if not manager.running:
                         logger.error(f"Failed to start managed IM {blue(im_key)}. It has been removed.")

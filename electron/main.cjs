@@ -10,6 +10,25 @@ let serverProcess;
 let serverPort;
 let serverStarted = false;
 const killer = new GracefulKiller();
+const MAX_LOG_LINES = 5000;
+const historicalLogs = [];
+
+function addLog(data) {
+  const log = data.toString();
+  // 按行分割，并添加到历史记录中
+  const lines = log.split(/(\r\n|\n|\r)/);
+  historicalLogs.push(...lines);
+
+  // 保持日志缓冲区大小
+  while (historicalLogs.length > MAX_LOG_LINES) {
+    historicalLogs.shift();
+  }
+
+  // 如果窗口存在，则发送实时日志
+  if (mainWindow) {
+    mainWindow.webContents.send('backend-log', log);
+  }
+}
 
 // 默认服务器配置
 const defaultServerConfig = {
@@ -27,7 +46,7 @@ const defaultServerConfig = {
   // 端口匹配正则表达式
   portRegex: /https?:\/\/(?:localhost|127\.0\.0\.1):(\d+)/i,
   // 启动超时时间（毫秒）
-  timeout: 10000
+  timeout: 25000
 };
 
 /**
@@ -108,7 +127,6 @@ async function startServer(config = defaultServerConfig) {
       if (portResolved) return;
       
       buffer += data.toString();
-      console.log('[Server] Current buffer:', buffer);
       
       const portMatch = buffer.match(serverConfig.portRegex);
       if (portMatch && !portResolved) {
@@ -124,18 +142,14 @@ async function startServer(config = defaultServerConfig) {
     serverProcess.stdout.on('data', (data) => {
       const output = data.toString().trim();
       console.log('[Server]', output);
-      if (mainWindow) {
-        mainWindow.webContents.send('backend-log', data.toString());
-      }
+      addLog(data);
       checkPortInBuffer(data);
     });
 
     serverProcess.stderr.on('data', (data) => {
       const error = data.toString().trim();
       console.error('[Server Error]', error);
-      if (mainWindow) {
-        mainWindow.webContents.send('backend-log', data.toString());
-      }
+      addLog(data);
       checkPortInBuffer(data);
     });
 
@@ -175,6 +189,12 @@ function registerIPCHandlers() {
     ipcMain.handle('get-api-port', () => {
       console.log('[IPC] get-api-port called, returning port:', serverPort);
       return serverPort;
+    });
+  }
+  if (!ipcMain.listenerCount('get-historical-logs')) {
+    ipcMain.handle('get-historical-logs', () => {
+      console.log(`[IPC] get-historical-logs called, returning ${historicalLogs.length} lines.`);
+      return historicalLogs.join('');
     });
   }
 }

@@ -1,6 +1,6 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
-const validInvokeChannels = ['get-api-port'];
+const validInvokeChannels = ['get-api-port', 'get-historical-logs'];
 const validReceiveChannels = ['backend-log', 'backend-port'];
 
 // 创建一个自定义事件
@@ -8,6 +8,7 @@ const apiReadyEvent = new Event('api-ready');
 
 contextBridge.exposeInMainWorld('api', {
   getApiPort: () => ipcRenderer.invoke('get-api-port'),
+  getHistoricalLogs: () => ipcRenderer.invoke('get-historical-logs'),
   send: (channel, data) => {
     const validChannels = [];
     if (validChannels.includes(channel)) {

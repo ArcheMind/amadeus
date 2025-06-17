@@ -821,9 +821,7 @@ const FormRenderer: React.FC<FormRendererProps> = ({
                 shouldTouch: true
               });
               
-              if (newValue) {
-                setLoadingSwitch(fieldPath);
-              }
+              setLoadingSwitch(fieldPath);
 
               // 立即提交 switch 的变化
               const formValues = watch();

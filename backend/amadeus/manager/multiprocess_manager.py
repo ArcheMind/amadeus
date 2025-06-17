@@ -2,11 +2,14 @@ import asyncio
 import multiprocessing
 import re
 import sys
+import traceback
 from enum import Enum, unique
 from queue import Empty
 from typing import Any, Callable, Dict, Optional, Set, Union
 
 from loguru import logger
+
+from amadeus.common import blue, green, red, yellow
 
 
 @unique
@@ -65,7 +68,7 @@ class MultiprocessManager:
 
     async def set_state(self, new_state: Union[MultiprocessState, str]):
         if self._current_state != new_state:
-            logger.info(f"Process '{self.name}' state change: {self._current_state} -> {new_state}")
+            logger.info(f"Subprocess {blue(self.name)} state changed to: {green(new_state.value if isinstance(new_state, Enum) else new_state)}")
             self._current_state = new_state
             self._state_changed_event.set()
             self._state_changed_event.clear()
@@ -87,9 +90,10 @@ class MultiprocessManager:
         try:
             target(*args, **kwargs)
         except Exception:
-            import traceback
+            # import traceback
             # Print exception to stderr which is redirected to the queue
-            print(f"An exception occurred in the child process:\n{traceback.format_exc()}", file=sys.stderr)
+            # print(f"An exception occurred in the child process:\n{traceback.format_exc()}", file=sys.stderr)
+            logger.error(f"An exception occurred in the child process:\n{traceback.format_exc()}")
 
 
     def _start_monitoring_tasks(self):
@@ -111,6 +115,7 @@ class MultiprocessManager:
         
         process_args = (self._log_queue, self.target) + self.args
         self._process = self._mp_context.Process(target=self._process_wrapper, args=process_args, kwargs=self.kwargs)
+        logger.info(f"Starting subprocess: {blue(self.name)} with target {green(self.target.__name__)}")
         self._process.start()
         
         await self.set_state(MultiprocessState.RUNNING)
@@ -121,6 +126,7 @@ class MultiprocessManager:
             return
 
         await self.set_state(MultiprocessState.STOPPING)
+        logger.info(f"Stopping subprocess: {blue(self.name)}...")
 
         loop = asyncio.get_event_loop()
         if self._process and self._process.is_alive():
@@ -128,9 +134,9 @@ class MultiprocessManager:
             try:
                 await asyncio.wait_for(loop.run_in_executor(None, self._process.join), timeout=10)
             except asyncio.TimeoutError:
-                logger.warning(f"Process '{self.name}' did not terminate gracefully. Killing it.")
                 if self._process.is_alive():
                     self._process.kill()
+                    logger.warning(f"Subprocess {blue(self.name)} did not terminate gracefully, killing it.")
                     await loop.run_in_executor(None, self._process.join)
         
         await self.set_state(MultiprocessState.STOPPED)
@@ -150,12 +156,13 @@ class MultiprocessManager:
         await loop.run_in_executor(None, self._process.join)
         
         exitcode = self._process.exitcode
-        logger.info(f"Process '{self.name}' exited with code {exitcode}.")
         
         if self._current_state not in [MultiprocessState.STOPPING, MultiprocessState.STOPPED]:
             if exitcode != 0:
+                logger.error(f"Subprocess {blue(self.name)} terminated unexpectedly with exit code {red(str(exitcode))}.")
                 await self.set_state(MultiprocessState.ERROR)
             else:
+                logger.info(f"Subprocess {blue(self.name)} finished gracefully.")
                 await self.set_state(MultiprocessState.STOPPED)
         else:
              await self.set_state(MultiprocessState.STOPPED)
@@ -180,7 +187,7 @@ class MultiprocessManager:
                 
                 line = line.strip()
                 if self.stream_logs:
-                    logger.opt(raw=True).info(f"{line}\n")
+                    logger.opt(raw=True).info(f"[{blue(self.name)}] {line}\n")
 
                 for state, pattern in self.custom_state_patterns.items():
                     if pattern.search(line):
@@ -208,7 +215,6 @@ class MultiprocessManager:
             return False
 
     async def close(self):
-        logger.info(f"Closing MultiprocessManager for '{self.name}'")
         if self.current_state not in [MultiprocessState.STOPPED, MultiprocessState.STOPPING]:
             await self.stop()
 

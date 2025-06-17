@@ -1,7 +1,7 @@
 import time
 import collections
 import asyncio
-from amadeus.common import gray, green
+from amadeus.common import gray, green, blue, red, yellow
 from amadeus.llm import llm
 from amadeus.tools.im import QQChat
 from amadeus.config import AMADEUS_CONFIG
@@ -24,20 +24,23 @@ TARGET_STATE = collections.defaultdict(lambda: State())
 
 
 async def user_loop():
-    logger.info("主机器人循环启动")
     while True:
         try:
             await asyncio.sleep(1)
-            for (chat_type, target_id), state in TARGET_STATE.items():
+            for (chat_type, target_id), state in list(TARGET_STATE.items()):
                 if state.last_view >= state.next_view:
                     continue
                 if state.next_view >= time.time():
                     continue
+                
+                logger.info(f"Processing event for target: {green(chat_type)} {blue(target_id)}")
+
                 qq_chat = QQChat(
                     api_base=f"ws://localhost:{AMADEUS_CONFIG.send_port}",
                     chat_type=chat_type,
                     target_id=target_id,
                 )
+                logger.trace(f"Viewing chat context for {green(chat_type)} {blue(target_id)}")
                 content = await qq_chat.view_chat_context()
                 state.last_view = state.next_view
 
@@ -52,6 +55,9 @@ async def user_loop():
                     if t in TOOL_MAP
                 ]
                 
+                logger.info(f"Calling LLM for target: {green(chat_type)} {blue(target_id)} with {len(tools) + 2} tools.")
+                logger.trace(f"LLM input content:\n{content}")
+
                 async for m in llm(
                     [
                         {
@@ -66,9 +72,12 @@ async def user_loop():
                     continue_on_tool_call=False,
                     temperature=1,
                 ):
-                    logger.info(green(m))
+                    logger.trace(f"LLM output for {green(chat_type)} {blue(target_id)}: {yellow(str(m))}")
+                    pass
+                logger.info(f"Finished processing for target: {green(chat_type)} {blue(target_id)}")
         except Exception as e:
-            logger.error(f"主机器人循环异常: {e}")
+            logger.error(f"Error in user_loop: {red(str(e))}")
+            pass
 
 
 
@@ -140,6 +149,7 @@ async def message_handler(data):
     for middleware in MIDDLEWARES:
         if await middleware(json_body):
             middleware_blocked = True
+            logger.trace(f"Message from {json_body.get('sender', {}).get('user_id')} blocked by {middleware.__name__}")
             break
     
     if middleware_blocked:
@@ -152,12 +162,7 @@ async def message_handler(data):
     target_id = json_body.get("group_id", 0) or json_body.get("user_id", 0)
     msg_time = json_body.get("time", 0)
     if msg_time:
-        logger.info(
-            gray(
-                f"收到消息: {target_type} {target_id} at {msg_time}, "
-                f"内容: {json_body.get('message', '')}"
-            )
-        )
+        logger.trace(f"Debounce task scheduled for {green(target_type)} {blue(target_id)}")
         TARGET_STATE[(target_type, target_id)].next_view = msg_time + DEBOUNCE_TIME
     return True
 
@@ -165,10 +170,11 @@ async def message_handler(data):
 async def _main():
     for daemon in DAEMONS:
         if daemon not in _TASKS:
+            logger.info(f"Starting daemon: {green(daemon.__name__)}")
             _TASKS[daemon] = asyncio.create_task(daemon())
-    logger.info(green(f"主进程启动， 连接到 WebSocket 端口 {AMADEUS_CONFIG.send_port}"))
     port = AMADEUS_CONFIG.send_port
     uri = f"ws://localhost:{port}/"
+    logger.info(f"Connecting to IM client at {green(uri)}")
     helper = WsConnector(uri)
     helper.register_event_handler(message_handler)
     await helper.start()

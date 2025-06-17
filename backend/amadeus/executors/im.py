@@ -1,5 +1,5 @@
 import websockets
-from typing import NoReturn
+from typing import NoReturn, Any, Callable, Dict, Optional
 import abc
 from loguru import logger
 import uuid
@@ -7,162 +7,102 @@ import asyncio
 import json
 
 import httpx
-from amadeus.common import async_lru_cache, green
-
-class Connector(abc.ABC):
-    @abc.abstractmethod
-    def __init__(self, api_base: str):
-        ...
-
-    @abc.abstractmethod
-    async def call(self, action: str, timeout=10.0, **params):
-        pass
-
-    @abc.abstractmethod
-    async def close(self):
-        pass
+from amadeus.common import (
+    async_lru_cache,
+    green,
+    format_timestamp,
+    gray,
+    blue,
+    red,
+    yellow,
+)
 
 
-class WsConnector(Connector):
-    INSTANCES = {}
-    def __new__(cls, api_base: str):
-        if api_base is None:
-            raise ValueError("api_base must be provided for WebSocketHelper instantiation")
-        api_base = api_base.rstrip('/')
-        if api_base not in cls.INSTANCES:
-            logger.debug(green(f"Creating new WebSocketHelper instance for {api_base}, existing instances: {list(cls.INSTANCES.keys())}"))
-            instance = super().__new__(cls)
-            cls.INSTANCES[api_base] = instance
-            return cls.INSTANCES[api_base]
-        else:
-            logger.debug(green(f"Reusing existing WebSocketHelper instance for {api_base}"))
-            return cls.INSTANCES[api_base]
+class WsConnector:
+    def __init__(self, uri):
+        self.uri = uri
+        self.event_handler: Optional[Callable] = None
+        self._is_running = False
+        self._conn: Optional[websockets.WebSocketClientProtocol] = None
 
-    def __init__(self, api_base: str):
-        if getattr(self, '_initialized', False):
-            return
+    def register_event_handler(self, handler: Callable):
+        self.event_handler = handler
 
-        self.api_base = api_base.rstrip('/')
-        self.event_handlers = []
-        self._call_queue = {}
-        self.ready = False
-        self._background = None
-        self._start_lock = asyncio.Lock()
-        self._initialized = True
-
-    def register_event_handler(self, handler):
-        if not asyncio.iscoroutinefunction(handler):
-            raise ValueError("Handler must be an async function")
-        self.event_handlers.append(handler)
-    
-    async def start(self, wait_forever=True) -> NoReturn:
-        """
-        connect to the WebSocket server and start the main loop, and wait forever
-        """
-        if self._background is None:
-            async with self._start_lock:
-                if self._background is None:
-                    self.websocket = await websockets.connect(self.api_base)
-                    self._timeout_task = asyncio.create_task(self._timeout_loop())
-                    self._background = asyncio.create_task(self._main_loop())
-        if wait_forever:
-            await self._background  # Wait for the main loop to start
-    
-    async def _main_loop(self):
-        self.ready = True
-        logger.info(f"Connected to WebSocket at {self.api_base}")
-        while True:
-            raw = await self.websocket.recv()
+    async def start(self):
+        self._is_running = True
+        retry_count = 0
+        while self._is_running:
             try:
-                data = json.loads(raw)
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to decode JSON from WebSocket: {e} - Raw data: {raw}")
-                continue
-            if "echo" in data:
-                echo = data["echo"]
-                if echo in self._call_queue:
-                    future = self._call_queue.pop(echo)
-                    if not future.done():
-                        future.set_result(data)
-                    else:
-                        logger.warning(f"Future for echo {echo} is already done: {future.result()}")
-                    continue
-                else:
-                    logger.warning(f"Unknown echo: {echo} in {data}")
-                    continue
-            else:
-                for handler in self.event_handlers:
-                    if await handler(data):
-                        break
-                continue
-    
-    async def _timeout_loop(self):
-        while True:
-            await asyncio.sleep(10)
-            to_pop = [echo for echo, future in self._call_queue.items() if future.cancelled()]
-            for echo in to_pop:
-                self._call_queue.pop(echo)
-    
-    async def call(self, action: str, timeout: float = 10.0, **params):
-        if self._background is None:
-            await self.start(wait_forever=False)
-        while not self.ready:
-            await asyncio.sleep(0.1)
-
-        echo = str(uuid.uuid4())
-        data = {"action": action, "params": params, "echo": echo}
-        await self.websocket.send(json.dumps(data))
-        future = asyncio.get_running_loop().create_future()
-        self._call_queue[echo] = future
-        return await asyncio.wait_for(future, timeout=timeout)
-
-    async def close(self):
-        if (ws := getattr(self, 'websocket')) is not None:
-            await ws.close()
-        if hasattr(self, '_timeout_task'):
-            self._timeout_task.cancel()
-        self._call_queue.clear()
-
-
-
-
-
-class HttpConnector(Connector):
-    def __init__(self, api_base: str):
-        self.api_base = api_base.rstrip('/')
-
-    async def call(self, action: str, **params):  # type: ignore
-        if action in ["send_group_msg", "send_private_msg"]:
-            endpoint = "send_msg"
-        else:
-            endpoint = action
-
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.api_base}/{endpoint}",
-                    json=params,
-                    timeout=20.0,
+                retry_count += 1
+                if retry_count > 3:
+                    logger.error(
+                        f"Failed to connect to WebSocket server at {red(self.uri)} after 3 attempts. Stopping WsConnector."
+                    )
+                    self._is_running = False
+                    break
+                async with websockets.connect(self.uri) as websocket:
+                    self._conn = websocket
+                    logger.info(
+                        f"Successfully connected to WebSocket server at {green(self.uri)}"
+                    )
+                    while self._is_running:
+                        try:
+                            message = await websocket.recv()
+                            retry_count = 0  # Reset retry count on successful message reception
+                            data = json.loads(message)
+                            logger.trace(
+                                f"Received message: {yellow(json.dumps(data, indent=2, ensure_ascii=False))}"
+                            )
+                            if self.event_handler:
+                                await self.event_handler(data)
+                        except websockets.exceptions.ConnectionClosed:
+                            logger.warning(
+                                f"WebSocket connection to {red(self.uri)} closed. Reconnecting..."
+                            )
+                            break
+                        except json.JSONDecodeError:
+                            logger.warning(f"Received invalid JSON message: {message}")
+                            continue
+            except (
+                websockets.exceptions.WebSocketException,
+                ConnectionRefusedError,
+            ) as e:
+                logger.error(
+                    f"Failed to connect to WebSocket at {red(self.uri)}: {e}. Retrying in 5 seconds..."
                 )
-            response.raise_for_status()
-            return response.json()
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error for action {action}: {e.response.status_code} {e.response.text}")
-            return {"status": "failed", "retcode": e.response.status_code, "data": None, "message": e.response.text}
-        except Exception as e:
-            logger.error(f"Error for action {action}: {e}")
-            return {"status": "failed", "retcode": -1, "data": None, "message": str(e)}
+                self._conn = None
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.error(f"An unexpected error occurred in WsConnector: {e}")
+                self._is_running = False
+                self._conn = None
 
-    async def close(self):
-        pass
+    async def stop(self):
+        self._is_running = False
+        if self._conn:
+            await self._conn.close()
+        logger.info(f"WebSocket connection to {green(self.uri)} stopped.")
 
+    async def send(self, data: Dict[str, Any]) -> None:
+        if self._conn:
+            await self._conn.send(json.dumps(data, ensure_ascii=False))
+            logger.trace(
+                f"Sent message: {yellow(json.dumps(data, indent=2, ensure_ascii=False))}"
+            )
+        else:
+            logger.error(
+                f"Cannot send message, WebSocket connection to {red(self.uri)} is not active."
+            )
 
 
 class InstantMessagingClient:
     INSTANCES = {}
+
     def __new__(cls, api_base: str):
         if api_base is None:
-            raise ValueError("api_base must be provided for InstantMessagingClient instantiation")
+            raise ValueError(
+                "api_base must be provided for InstantMessagingClient instantiation"
+            )
         if api_base not in cls.INSTANCES:
             instance = super().__new__(cls)
             cls.INSTANCES[api_base] = instance
@@ -170,142 +110,167 @@ class InstantMessagingClient:
         return cls.INSTANCES[api_base]
 
     def __init__(self, api_base: str):
-        if getattr(self, '_initialized', False):
+        if getattr(self, "_initialized", False):
             return
+        
+        self.api_base = api_base
         if api_base.startswith("ws://") or api_base.startswith("wss://"):
-            self.connector = WsConnector(api_base)
-        else:
-            self.connector = HttpConnector(api_base)
+            self._ws_connector: WsConnector = WsConnector(api_base)
+            self._response_futures: Dict[str, asyncio.Future] = {}
+            self._is_listener_running = False
+            self._listener_task: Optional[asyncio.Task] = None
         self._initialized = True
 
+    def _ensure_listener_running(self):
+        if not self._is_listener_running:
+            self._listener_task = asyncio.create_task(self._ws_connector.start())
+            self._ws_connector.register_event_handler(self._response_handler)
+            self._is_listener_running = True
+            logger.info(f"IM client listener started for {green(self.api_base)}")
+
+    async def _response_handler(self, response: Dict[str, Any]):
+        echo = response.get("echo")
+        if echo in self._response_futures:
+            future = self._response_futures[echo]
+            if not future.done():
+                future.set_result(response)
+                logger.trace(f"Response received for echo {blue(echo)}")
+
+    async def _send_request(
+        self, action: str, params: Dict[str, Any], timeout: int = 10
+    ) -> Dict[str, Any]:
+        self._ensure_listener_running()
+        echo = str(uuid.uuid4())
+        future = asyncio.get_event_loop().create_future()
+        self._response_futures[echo] = future
+
+        request = {"action": action, "params": params, "echo": echo}
+
+        try:
+            logger.debug(
+                f"Sending request (echo: {blue(echo)}): action={green(action)}, params={yellow(str(params))}"
+            )
+            await self._ws_connector.send(request)
+            response = await asyncio.wait_for(future, timeout=timeout)
+            logger.debug(f"Received response for echo {blue(echo)}")
+            return response
+        except asyncio.TimeoutError:
+            logger.error(
+                f"Request timed out for echo {blue(echo)} (action: {green(action)})"
+            )
+            raise
+        finally:
+            self._response_futures.pop(echo, None)
+
     async def close(self):
-        await self.connector.close()
+        if self._is_listener_running and self._listener_task:
+            self._listener_task.cancel()
+            await self._ws_connector.stop()
+            self._is_listener_running = False
+            logger.info(f"IM client for {green(self.api_base)} closed.")
 
     @async_lru_cache()
     async def get_group_name(self, group_id):
-        logger.info(f"获取群信息 {group_id}")
-        response = await self.connector.call(
-            "get_group_info",
-            group_id=str(group_id),
+        response = await self._send_request(
+            action="get_group_info", params={"group_id": str(group_id)}
         )
         if response and response.get("status") == "ok":
             group_name = response["data"]["group_name"]
             return group_name
         else:
-            logger.error(f"获取群信息失败: {response}")
             return str(group_id)
 
     async def get_joined_groups(self):
-        logger.info("获取已加入的群")
-        response = await self.connector.call(
-            "get_group_list",
-            no_cache=False,
-        )
+        response = await self._send_request(action="get_group_list", params={})
         if not (response and response.get("status") == "ok"):
-            logger.error(f"获取已加入的群失败: {response}")
             return []
         return response.get("data", [])
 
     @async_lru_cache(maxsize=1)
     async def get_login_info(self):
-        logger.info("获取自己信息")
-        response = await self.connector.call("get_login_info")
+        response = await self._send_request(action="get_login_info", params={})
 
         if not (response and response.get("status") == "ok"):
-            logger.error(f"获取自己信息失败: {response}")
             return None
         return response.get("data")
 
     @async_lru_cache()
     async def get_user_name(self, user_id):
-        logger.info(f"获取用户信息 {user_id}")
-        response = await self.connector.call(
-            "get_stranger_info",
-            user_id=str(user_id),
+        response = await self._send_request(
+            action="get_stranger_info", params={"user_id": str(user_id)}
         )
         if response and response.get("status") == "ok":
             remark = response["data"].get("remark")
             nickname = response["data"].get("nickname")
             return remark or nickname or str(user_id)
         else:
-            logger.error(f"获取用户信息失败: {response}")
             return str(user_id)
 
     @async_lru_cache()
     async def get_group_member_name(self, user_id, group_id):
-        logger.info(f"获取群成员信息 {user_id} {group_id}")
-        response = await self.connector.call(
-            "get_group_member_info",
-            group_id=str(group_id),
-            user_id=str(user_id),
-            no_cache=False,
+        response = await self._send_request(
+            action="get_group_member_info",
+            params={"group_id": str(group_id), "user_id": str(user_id)},
         )
         if response and response.get("status") == "ok":
             data = response["data"]
-            group_card = data.get("card")
+            card = data.get("card")
             nickname = data.get("nickname")
-            return group_card or nickname or str(user_id)
+            return card or nickname or str(user_id)
         else:
-            logger.error(f"获取群成员信息失败: {response}")
             return str(user_id)
 
     async def set_group_ban(self, group_id: int, user_id: int, duration: int = 0):
-        logger.info(f"设置群禁言 {group_id} {user_id} {duration}")
-        response = await self.connector.call(
-            "set_group_ban",
-            group_id=str(group_id),
-            user_id=str(user_id),
-            duration=duration,
+        response = await self._send_request(
+            action="set_group_ban",
+            params={
+                "group_id": str(group_id),
+                "user_id": str(user_id),
+                "duration": duration,
+            },
         )
         if response and response.get("status") == "ok":
             return True
         else:
-            logger.error(f"设置群禁言失败: {response}")
+            logger.warning(
+                f"Failed to set group ban for user {user_id} in group {group_id}. Response: {response}"
+            )
             return False
 
     async def send_message(self, message, target_type: str, target_id: int):
-        logger.info(f"发送消息 {target_type} {target_id}")
-
-        action = None
-        params = {"message": message}
-
         if target_type == "group":
             action = "send_group_msg"
-            params["group_id"] = str(target_id)
+            params = {"group_id": target_id, "message": message}
         elif target_type == "private":
             action = "send_private_msg"
-            params["user_id"] = str(target_id)
+            params = {"user_id": target_id, "message": message}
         else:
-            logger.info("[未知消息类型]")
-            return
+            return None
 
-        response = await self.connector.call(action, **params)
+        response = await self._send_request(action, params)
 
         if response and response.get("status") == "ok":
-            return response
+            return response.get("data")
         else:
-            logger.error(f"发送消息失败: {response}")
-            return False
+            return None
 
     async def delete_message(self, message_id):
-        response = await self.connector.call(
-            "delete_msg",
-            message_id=str(message_id),
+        response = await self._send_request(
+            action="delete_msg", params={"message_id": str(message_id)}
         )
         if response and response.get("status") == "ok":
             return True
-        return False
+        else:
+            return False
 
     @async_lru_cache()
     async def get_message(self, message_id):
-        response = await self.connector.call(
-            "get_msg",
-            message_id=str(message_id),
+        response = await self._send_request(
+            action="get_msg", params={"message_id": str(message_id)}
         )
         if response and response.get("status") == "ok":
             return response.get("data")
         else:
-            logger.error(f"获取消息失败: {response}")
             return None
 
     async def get_chat_history(
@@ -315,24 +280,77 @@ class InstantMessagingClient:
         till_message_id: int = 0,
         count: int = 20,
     ):
-        params = {
-            "message_seq": till_message_id,
-            "count": count,
-            "reverseOrder": True,
-        }
-        action = None
         if target_type == "group":
             action = "get_group_msg_history"
-            params["group_id"] = str(target_id)
+            params = {"group_id": target_id}
         elif target_type == "private":
             action = "get_friend_msg_history"
-            params["user_id"] = str(target_id)
+            params = {"user_id": target_id}
+        else:
+            return []
+        if till_message_id:
+            params["message_seq"] = till_message_id
+
+        response = await self._send_request(action, params)
+        if response and response.get("status") == "ok":
+            return response.get("data", {}).get("messages", [])
         else:
             return []
 
-        response = await self.connector.call(action, **params)
-        if response and response.get("status") == "ok":
-            return response.get("data", {}).get("messages", [])
 
-        logger.error(f"获取{target_type}消息失败: {response}")
-        return []
+class QQChat:
+    def __init__(self, api_base: str, chat_type: str, target_id: int):
+        self.client = InstantMessagingClient(api_base)
+        self.chat_type = chat_type
+        self.target_id = target_id
+
+    async def send_message(self, content: str):
+        """
+        在当前会话中发送消息
+        """
+        await self.client.send_message(
+            message=content, chat_type=self.chat_type, target_id=self.target_id
+        )
+
+    async def ignore(self):
+        """
+        忽略当前对话
+        """
+        pass
+
+    async def set_group_ban(self, user_id: int, duration: int = 60):
+        """
+        群管理-禁言
+        """
+        await self.client.set_group_ban(
+            group_id=self.target_id, user_id=user_id, duration=duration
+        )
+
+    async def delete_message(self, message_id: int):
+        """
+        撤回消息
+        """
+        await self.client.delete_message(message_id=message_id)
+
+    async def view_chat_context(self) -> str:
+        res = ""
+        msgs = await self.client.get_chat_history(
+            target_type=self.chat_type, target_id=self.target_id
+        )
+        my_info = await self.client.get_login_info()
+        my_user_id = my_info["user_id"]
+        group_name = await self.client.get_group_name(self.target_id)
+        res += f"当前群名: {group_name}\n"
+        res += "对话记录:\n"
+        for msg in msgs:
+            user_id = msg["sender"]["user_id"]
+            if user_id == my_user_id:
+                name = "我"
+            else:
+                name = await self.client.get_group_member_name(
+                    user_id=user_id, group_id=self.target_id
+                )
+            timestamp = msg.get("time", 0)
+            dt = format_timestamp(timestamp)
+            res += f'{name} {gray(dt)}:\n  {msg["raw_message"]}\n'
+        return res

@@ -11,7 +11,7 @@ import multiprocessing
 import copy
 import fastapi
 import socket
-from amadeus.common import green
+from amadeus.common import green, blue, red, yellow
 from amadeus.config_schema import CONFIG_SCHEMA, EXAMPLE_CONFIG
 from amadeus.config_router import ConfigRouter
 from amadeus.config_persistence import ConfigPersistence
@@ -50,9 +50,7 @@ def run_amadeus_app_target(config_yaml: str, app_name: str):
 
     try:
         main()
-    except Exception as e:
-        # 使用配置好的logger来记录异常，它会被发送到父进程
-        logger.exception(f"An exception occurred in amadeus.app.main for '{app_name}': {e}")
+    except Exception:
         # 抛出异常以确保子进程以错误代码退出
         raise
 
@@ -64,38 +62,39 @@ async def lifespan(_: fastapi.FastAPI):
     """
     try:
         # Startup event
-        logger.info("Application startup: Initializing services.")
+        logger.info(f"{yellow('--- Application starting up ---')}")
         config_data = config_persistence.load()
         # Avoid logging full config_data if it's too verbose or contains sensitive info
         # logger.debug(f"Initial configuration data: {config_data}")
+        logger.info("Applying initial configuration...")
         config_data, _ = await WorkerManager.apply_config(config_data)
-        logger.info("Application startup: Services initialized.")
+        logger.info(f"{yellow('--- Application startup complete ---')}")
         yield  # Yield control back to the FastAPI app
     finally:
         # Shutdown event
-        logger.info("Application shutdown: Terminating all services.")
+        logger.info(f"{yellow('--- Application shutting down ---')}")
         if WorkerManager.watcher:
             WorkerManager.watcher.cancel()
             try:
                 await WorkerManager.watcher
             except asyncio.CancelledError:
-                logger.info("Process watcher task cancelled.")
+                pass
 
         active_processes = list(WorkerManager.amadeus_workers.values())
+        if active_processes:
+            logger.info(f"Closing {len(active_processes)} Amadeus worker(s)...")
         for manager in active_processes:
-            logger.info(f"Shutting down service '{manager.name}'.")
             await manager.close()
 
         active_ims = list(WorkerManager.managed_ims.values())
+        if active_ims:
+            logger.info(f"Closing {len(active_ims)} IM manager(s)...")
         for manager in active_ims:
-            logger.info(f"Shutting down im service '{manager.name}'.")
             await manager.close()
 
         WorkerManager.amadeus_workers.clear()  # Clear out the process map
         WorkerManager.managed_ims.clear()
-        logger.info(
-            "Application shutdown: All services terminated. WorkerManager shutdown complete."
-        )
+        logger.info(f"{yellow('--- Application shutdown complete ---')}")
 
 
 app = fastapi.FastAPI(
@@ -127,9 +126,10 @@ config_persistence = ConfigPersistence(EXAMPLE_CONFIG)
 
 
 async def save_config_data(config_data: dict):
-    logger.info("Updating configuration data.")
+    logger.info(f"{yellow('--- User triggered configuration save ---')}")
     modified_config_data, config_changed = await WorkerManager.apply_config(config_data)
     config_persistence.save(modified_config_data)
+    logger.info(f"{yellow('--- Configuration saved and applied ---')}")
     return config_changed
 
 
@@ -153,9 +153,6 @@ async def app_enhancer(
     """
     # Placeholder for joined group logic
     # Find instance in list
-    logger.debug(
-        f"Enhancing schema for class '{class_name}' with instance '{instance_name}'"
-    )
     instances = config_data.get(class_name, [])
     if not instance_name:
         return schema
@@ -187,34 +184,26 @@ async def app_enhancer(
             else:
                 manager_status = f"🔵状态: {im_manager.current_state}"
         else:
-            logger.warning(
-                f"Managed instance '{instance_name}' not found in WorkerManager."
-            )
+            pass
         schema["schema"]["properties"]["managed"]["description"] = manager_status
 
     if send_port:
         from amadeus.executors.im import InstantMessagingClient
 
         im = InstantMessagingClient(api_base=f"ws://localhost:{send_port}")
-        logger.info(
-            f"Enhancing schema for class '{class_name}' with instance '{instance_name}' using IM client on port {send_port}"
-        )
         try:
+            logger.info(f"Enhancer: Fetching joined groups for app {blue(instance_name)} from {green(f'ws://localhost:{send_port}')}")
             groups = await im.get_joined_groups()
             if groups:
+                logger.info(f"Enhancer: Successfully fetched {green(len(groups))} groups for app {blue(instance_name)}.")
                 schema["schema"]["properties"]["enabled_groups"]["suggestions"] = [
                     {"title": group["group_name"], "const": str(group["group_id"])}
                     for group in groups
                 ]
             return schema
         except Exception as e:
-            import traceback
-            logger.error(
-                f"Error enhancing schema for class '{class_name}' with instance '{instance_name}': {str(e)}"
-            )
-            logger.error(
-                traceback.format_exc()
-            )
+            logger.error(f"Enhancer: Failed to fetch joined groups for app {blue(instance_name)} from {green(f'ws://localhost:{send_port}')}: {red(str(e))}")
+            pass
 
     return schema
 
@@ -230,9 +219,6 @@ async def model_list_enhancer(
     This is a placeholder for future implementation.
     """
     # Placeholder for model list logic
-    logger.debug(
-        f"Enhancing schema for class '{class_name}' with instance '{instance_name}'"
-    )
     instances = config_data.get(class_name, [])
     for instance in instances:
         if instance.get("name") == instance_name:
@@ -255,6 +241,12 @@ async def model_list_enhancer(
         }
         models_url = f"{base_url}/models"
 
+        logger.info(f"Enhancer: Fetching models for provider {blue(instance_name)} from {green(models_url)}")
+        masked_headers = headers.copy()
+        if "Authorization" in masked_headers and masked_headers["Authorization"]:
+            masked_headers["Authorization"] = "Bearer ***"
+        logger.trace(f"Requesting {blue(models_url)} with headers: {yellow(str(masked_headers))}")
+
         async with httpx.AsyncClient() as client:
             response = await client.get(models_url, headers=headers)
             response.raise_for_status()
@@ -263,15 +255,14 @@ async def model_list_enhancer(
             if models:
                 schema = copy.deepcopy(schema)
                 if models:
+                    logger.info(f"Enhancer: Successfully fetched {green(len(models))} models for provider {blue(instance_name)}.")
                     schema["schema"]["properties"]["models"]["suggestions"] = [
                         {"title": model["id"], "const": model["id"]}
                         for model in models
                     ]
                 return schema
     except Exception as e:
-        logger.error(
-            f"Error enhancing schema for class '{class_name}' with instance '{instance_name}': {str(e)}"
-        )
+        logger.error(f"Enhancer: Failed to fetch models for provider {blue(instance_name)} from {green(models_url)}: {red(str(e))}")
         return schema
 
 async def select_model_enhancer(
@@ -285,9 +276,6 @@ async def select_model_enhancer(
     This is a placeholder for future implementation.
     """
     # Placeholder for model selection logic
-    logger.debug(
-        f"Enhancing schema for class '{class_name}' with instance '{instance_name}'"
-    )
     instances = config_data.get(class_name, [])
     for instance in instances:
         if instance.get("name") == instance_name:
@@ -395,39 +383,26 @@ def digest_config_data(config_data):
     seen_app_names = set()  # Track seen app names to avoid duplicates and log clearly
     resolved_apps = []
     apps_to_process = config_data.get("apps", [])
-    logger.info(
-        f"Digesting configuration: Found {len(apps_to_process)} app(s) defined in config."
-    )
 
     for app_config in apps_to_process:
         app_name = app_config.get("name", "UnnamedApp")
         if app_name in seen_app_names:
-            logger.warning(
-                f"Duplicate app name '{app_name}' found in configuration, skipping subsequent instance."
-            )
             continue
         seen_app_names.add(app_name)
         try:
-            logger.info(
-                f"Processing enabled app: '{app_name}'. Embedding referenced configurations."
-            )
             embedded_app = embed_config_item(app_config, config_data, "apps")
             resolved_apps.append(embedded_app)
-            logger.info(f"Successfully processed and resolved app: '{app_name}'.")
         except (
             fastapi.HTTPException
         ) as e:  # Assuming embed_config_item can raise HTTPException
             logger.error(
-                f"Error processing app '{app_name}': {e.detail}. This app will be skipped."
+                f"Error processing app '{blue(app_name)}': {red(e.detail)}. This app will be skipped."
             )
         except Exception as e:
             logger.error(
-                f"Unexpected error processing app '{app_name}': {str(e)}. This app will be skipped."
+                f"Unexpected error processing app '{blue(app_name)}': {red(str(e))}. This app will be skipped."
             )
 
-    logger.info(
-        f"Digestion complete: {len(resolved_apps)} app(s) processed and enabled."
-    )
     return resolved_apps
 
 
@@ -438,10 +413,11 @@ class WorkerManager:
 
     @classmethod
     async def apply_config(cls, config_data):
+        logger.info(f"{yellow('--- Applying configuration ---')}")
         config_changed = False
 
+        logger.debug("Digesting configuration data...")
         apps = digest_config_data(config_data)
-        logger.info(f"Applying configuration. {len(apps)} app(s) to configure.")
 
         # Store app name along with hash for better logging
         im_info_map = {}
@@ -454,14 +430,15 @@ class WorkerManager:
                     "config": app_config,
                 }
 
+        logger.debug("Checking for changes in managed IMs...")
         prev_ims = set(cls.managed_ims.keys())
         current_ims = set(im_info_map.keys())
 
         to_remove_ims = prev_ims - current_ims
         to_add_ims = current_ims - prev_ims
 
-        managed_ports = {}
-
+        if to_remove_ims:
+            logger.info(f"Removing {len(to_remove_ims)} IM manager(s): {', '.join(map(blue, to_remove_ims))}")
         for im_key in to_remove_ims:
             if im_key in cls.managed_ims:
                 manager = cls.managed_ims[im_key]
@@ -469,6 +446,7 @@ class WorkerManager:
                 del cls.managed_ims[im_key]
 
         if to_add_ims:
+            logger.info(f"Adding {len(to_add_ims)} IM manager(s): {', '.join(map(blue, to_add_ims))}")
             for im_key in to_add_ims:
                 config = im_info_map[im_key]["config"]
                 manager = get_napcat_manager(
@@ -487,9 +465,7 @@ class WorkerManager:
                             break
 
                     if not manager.running:
-                        logger.error(
-                            f"IM service for '{im_key}' failed to start or terminated prematurely. Current state: {state}"
-                        )
+                        logger.error(f"Failed to start managed IM {blue(im_key)}. It has been removed.")
                         await manager.close()
                         del cls.managed_ims[im_key]
                         return
@@ -497,27 +473,26 @@ class WorkerManager:
                     for app in config_data.get("apps", []):
                         if app.get("name") == config["name"]:
                             app["send_port"] = manager.ports[3001]
+                            logger.info(f"Managed IM {blue(im_key)} started. App {blue(config['name'])} send_port updated to {green(app['send_port'])}.")
                             break
 
-                    logger.info(
-                        f"IM service for '{im_key}' started successfully on port {manager.ports[3001]}."
-                    )
-                except Exception as e:
-                    logger.error(f"Error during IM service startup for '{im_key}': {e}")
+                except Exception:
                     await manager.close()
                     if im_key in cls.managed_ims:
                         del cls.managed_ims[im_key]
 
+        logger.debug("Updating send_port for apps with managed IMs...")
         for im_key, manager in cls.managed_ims.items():
             config = im_info_map[im_key]["config"]
-            managed_ports[config["name"]] = manager.ports[3001]
+            for app in config_data.get("apps", []):
+                if app.get("name") == config["name"]:
+                    app["send_port"] = manager.ports[3001]
+                    logger.info(f"App {blue(app['name'])} send_port updated to {green(manager.ports[3001])} due to managed IM {blue(im_key)}.")
 
         app_info_map = {}
         apps = digest_config_data(config_data)
         for app_config in apps:
             if app_config.get("enable", False):
-                if app_config.get("name") in managed_ports:
-                    app_config["send_port"] = managed_ports[app_config["name"]]
                 app_yaml = yaml.safe_dump(app_config, allow_unicode=True, sort_keys=True)
                 app_hash = md5(app_yaml.encode()).hexdigest()[:10]
                 name = f"amadeus-{app_hash}"
@@ -526,28 +501,24 @@ class WorkerManager:
                     "config": app_config,
                 }
 
-        logger.info(
-            f"IM services status: {len(cls.managed_ims)} IM service(s) now running."
-        )
-
+        logger.debug("Checking for changes in Amadeus workers...")
         prev_process_hashes = set(cls.amadeus_workers.keys())
         current_app_hashes = set(app_info_map.keys())
-        logger.info(
-            f"Current app hashes: {current_app_hashes}, Previous process hashes: {prev_process_hashes}"
-        )
 
         to_remove_amadeus = prev_process_hashes - current_app_hashes
         to_add_amadeus = current_app_hashes - prev_process_hashes
 
 
+        if to_remove_amadeus:
+            logger.info(f"Stopping {len(to_remove_amadeus)} Amadeus worker(s): {', '.join(map(blue, to_remove_amadeus))}")
         for app_hash in to_remove_amadeus:
             if app_hash in cls.amadeus_workers:
                 manager = cls.amadeus_workers[app_hash]
-                logger.info(f"Stopping service for app '{manager.name}'.")
                 await manager.close()
                 del cls.amadeus_workers[app_hash]
 
         if to_add_amadeus:
+            logger.info(f"Starting {len(to_add_amadeus)} Amadeus worker(s): {', '.join(map(blue, to_add_amadeus))}")
             for app_hash in to_add_amadeus:
                 app_detail = app_info_map[app_hash]
                 app_name = app_detail["name"]
@@ -555,7 +526,6 @@ class WorkerManager:
                     app_detail["config"], allow_unicode=True, sort_keys=True
                 )
 
-                logger.info(f"Attempting to start service for app '{app_name}'.")
 
                 manager = MultiprocessManager(
                     name=app_name,
@@ -569,29 +539,23 @@ class WorkerManager:
                 await asyncio.sleep(3)
 
                 if manager.current_state != MultiprocessState.RUNNING:
-                    logger.error(
-                        f"Service for app '{app_name}' failed to start or terminated prematurely. Current state: {manager.current_state}"
-                    )
                     await manager.close()
+                    logger.error(f"Failed to start Amadeus worker {blue(app_name)}. It has been disabled.")
                     
                     config_changed = True
                     for app_config_item in config_data.get("apps", []):
-                        if app_config_item.get("name") == app_name:
+                        if app_config_item.get("name") == app_detail["config"]["name"]:
                             app_config_item["enable"] = False
-                            logger.info(
-                                f"App '{app_name}' has been disabled in the configuration due to startup failure."
-                            )
                             break
                 else:
-                    logger.info(f"Service for app '{app_name}' started successfully.")
                     cls.amadeus_workers[app_hash] = manager
 
 
-        logger.info(f"System status: {len(cls.amadeus_workers)} service(s) now running.")
-
         if cls.watcher is None or cls.watcher.done():
+            logger.info("Process watcher is not running. Starting it now.")
             cls.watcher = asyncio.create_task(cls.watch_processes())
 
+        logger.info(f"{yellow('--- Configuration application finished ---')}")
         return config_data, config_changed
 
     @classmethod
@@ -599,24 +563,18 @@ class WorkerManager:
         """
         Monitors managed amadeus_workers and handles unexpected termination.
         """
+        logger.info("Process watcher started.")
         while True:
             try:
                 for app_hash, manager in list(cls.amadeus_workers.items()):
                     if manager.current_state in [MultiprocessState.STOPPED, MultiprocessState.ERROR]:
-                        logger.warning(
-                            f"Service '{manager.name}' terminated unexpectedly with state: {manager.current_state}. "
-                            "It will be removed from active amadeus_workers."
-                        )
-                        
+                        logger.warning(f"Watcher detected worker {blue(manager.name)} (hash: {app_hash}) has stopped unexpectedly. Removing it.")
                         await manager.close() # Ensure cleanup
                         del cls.amadeus_workers[app_hash]
 
-                        logger.warning(
-                            f"Automatic restart for '{manager.name}' is not yet implemented. The service will remain stopped."
-                        )
                 await asyncio.sleep(10)  # Check every 10 seconds
             except asyncio.CancelledError:
-                logger.info("Process watcher task is shutting down.")
+                logger.info("Process watcher is shutting down.")
                 break
             except Exception as e:
                 logger.error(f"An error occurred in the process watcher: {e}")

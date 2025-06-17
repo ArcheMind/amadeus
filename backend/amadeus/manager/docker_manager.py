@@ -5,6 +5,8 @@ from enum import Enum, unique
 from typing import Dict, List, Optional, Set, Union
 from loguru import logger
 
+from amadeus.common import blue, green, red, yellow
+
 
 @unique
 class DockerContainerState(Enum):
@@ -72,7 +74,7 @@ class DockerRunManager:
 
     async def set_state(self, new_state: Union[DockerContainerState, str]):
         if self._current_state != new_state:
-            logger.info(f"stage change: {self._current_state} -> {new_state}")
+            logger.info(f"Container {blue(self.name)} state changed to: {green(new_state.value if isinstance(new_state, Enum) else new_state)}")
             self._current_state = new_state
             self.state_changed.set()
             self.state_changed.clear()
@@ -100,10 +102,12 @@ class DockerRunManager:
 
         cmd.append(self.image_name)
         cmd.extend(self.run_command)
+        logger.debug(f"Built docker command: {blue(' '.join(cmd))}")
         return cmd
 
     async def _run_subprocess(self, *args) -> Optional[str]:
         try:
+            logger.trace(f"Running command: {blue(' '.join(args))}")
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
@@ -112,9 +116,16 @@ class DockerRunManager:
             stdout, stderr = await proc.communicate()
 
             if proc.returncode != 0:
+                logger.error(f"Command failed with return code {red(str(proc.returncode))}: {blue(' '.join(args))}. Stderr: {red(stderr.decode().strip())}")
                 return None
+            
+            logger.trace(f"Command finished successfully: {blue(' '.join(args))}")
             return stdout.decode().strip()
-        except (FileNotFoundError, Exception):
+        except FileNotFoundError:
+            logger.error(f"Command not found: {red(args[0])}. Please ensure Docker is installed and in the system's PATH.")
+            return None
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while running command: {blue(' '.join(args))}. Error: {red(str(e))}")
             return None
 
 
@@ -137,6 +148,7 @@ class DockerRunManager:
         if self.current_state not in [DockerContainerState.PENDING, DockerContainerState.STOPPED, DockerContainerState.ERROR]:
             return
 
+        logger.info(f"Starting container: {blue(self.name)}...")
         await self.set_state(DockerContainerState.STARTING)
         container_id = await self._get_container_id_by_name()
 
@@ -145,6 +157,7 @@ class DockerRunManager:
             new_container_id = await self._run_subprocess(*run_cmd)
 
             if not new_container_id:
+                logger.error(f"Failed to create container: {blue(self.name)}")
                 await self.set_state(DockerContainerState.ERROR)
                 return
         else:
@@ -156,6 +169,7 @@ class DockerRunManager:
         if self.current_state in [DockerContainerState.STOPPED, DockerContainerState.STOPPING]:
              return
 
+        logger.info(f"Stopping container: {blue(self.name)}...")
         await self.set_state(DockerContainerState.STOPPING)
         container_id = await self._get_container_id_by_name()
         if container_id:
@@ -168,6 +182,7 @@ class DockerRunManager:
         self._monitor_tasks.clear()
 
     async def remove(self):
+        logger.info(f"Removing container: {blue(self.name)}...")
         await self.set_state(DockerContainerState.REMOVING)
         container_id = await self._get_container_id_by_name()
         if container_id:
@@ -186,6 +201,11 @@ class DockerRunManager:
             
             status = await self._get_container_state_by_id(container_id)
             
+            if not status:
+                logger.warning(f"Could not get status for container {blue(self.name)} ({container_id}). Assuming it has been removed.")
+                await self.set_state(DockerContainerState.STOPPED)
+                break
+
             new_state = self.current_state
             
             if status == "running":
@@ -200,6 +220,7 @@ class DockerRunManager:
                 await self.set_state(new_state)
 
             if new_state == DockerContainerState.STOPPED:
+                logger.info(f"Container {blue(self.name)} has stopped.")
                 break
 
             await asyncio.sleep(2)
@@ -262,7 +283,6 @@ class DockerRunManager:
             return False
 
     async def close(self):
-        logger.info(f"Closing DockerRunManager for container '{self.name}'")
         if self.current_state not in [DockerContainerState.STOPPED, DockerContainerState.STOPPING]:
              await self.stop()
         

@@ -1,5 +1,7 @@
 # This is a full file replacement to fix previous editing errors.
 import os
+import platform
+import subprocess
 from hashlib import md5
 import logging
 from loguru import logger
@@ -83,6 +85,44 @@ async def save_config_data(config_data: dict):
     return original_config != modified_config_data
 
 
+def check_docker_status():
+    """
+    Check if Docker is running on both Windows and POSIX systems.
+    Returns tuple (is_running: bool, status_message: str)
+    """
+    try:
+        system = platform.system().lower()
+        
+        if system == "windows":
+            # For Windows, check if Docker Desktop is running
+            result = subprocess.run(
+                ["docker", "info"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+        else:
+            # For POSIX systems (Linux, macOS), check docker daemon
+            result = subprocess.run(
+                ["docker", "info"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+        
+        if result.returncode == 0:
+            return True, "🟢Docker运行中"
+        else:
+            return False, "🔴Docker未运行"
+            
+    except subprocess.TimeoutExpired:
+        return False, "🔴Docker检测超时"
+    except FileNotFoundError:
+        return False, "🔴Docker未安装"
+    except Exception as e:
+        return False, f"🔴Docker检测失败: {str(e)}"
+
+
 # Initialize the config router with schema and data getter/setter
 config_router = ConfigRouter(
     config_schema=CONFIG_SCHEMA,
@@ -110,6 +150,8 @@ async def app_enhancer(
 
     schema = copy.deepcopy(schema)
 
+    # Check Docker status
+    
     onebot_server = instance.get("onebot_server", "")
 
     if instance.get("managed", False):
@@ -137,7 +179,20 @@ async def app_enhancer(
             pass
         schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
         schema["schema"]["properties"]["onebot_server"]["hidden"] = True
+        # Add Docker status to managed description
         schema["schema"]["properties"]["managed"]["description"] = manager_status
+    else:
+        docker_running, docker_status = check_docker_status()
+        # If not managed, still show Docker status and make managed readOnly if Docker is not running
+        if not docker_running:
+            schema["schema"]["properties"]["managed"]["readOnly"] = True
+        
+        # Add Docker status to managed description
+        current_description = schema["schema"]["properties"]["managed"].get("description", "")
+        if current_description:
+            schema["schema"]["properties"]["managed"]["description"] = f"{current_description} | {docker_status}"
+        else:
+            schema["schema"]["properties"]["managed"]["description"] = docker_status
 
     if onebot_server:
         if not instance.get("managed", False):
@@ -170,7 +225,7 @@ async def app_enhancer(
     return schema
 
 
-async def model_list_enhancer(
+async def model_provider_enhancer(
     schema: Dict[str, Any],
     config_data: Dict[str, Any],
     class_name: str,
@@ -223,7 +278,7 @@ async def model_list_enhancer(
     return schema
 
 
-async def select_model_enhancer(
+async def character_enhancer(
     schema: Dict[str, Any],
     config_data: Dict[str, Any],
     class_name: str,
@@ -245,11 +300,11 @@ config_router.register_schema_enhancer(
 )
 config_router.register_schema_enhancer(
     "model_providers",
-    model_list_enhancer,
+    model_provider_enhancer,
 )
 config_router.register_schema_enhancer(
     "characters",
-    select_model_enhancer,
+    character_enhancer,
 )
 app.include_router(config_router.router)
 

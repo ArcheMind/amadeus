@@ -33,8 +33,8 @@ async def lifespan(_: fastapi.FastAPI):
         for app in config_data.get("apps", []):
             if not isinstance(app, dict):
                 continue
-            if app.get("enabled", False):
-                app["enabled"] = False
+            if app.get("enable", False):
+                app["enable"] = False
             if app.get("managed", False):
                 app["managed"] = False
         config_persistence.save(config_data)

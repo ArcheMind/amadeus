@@ -3,6 +3,7 @@ import asyncio
 import json
 import inspect
 from amadeus.config import AMADEUS_CONFIG
+from amadeus.common import green
 from typing import (
     Dict,
     Any,
@@ -353,6 +354,6 @@ if __name__ == "__main__":
             tools=[get_current_weather_auto],
             continue_on_tool_call=True,
         ):
-            print(response)
+            logger.info(green(response))
 
     asyncio.run(main())

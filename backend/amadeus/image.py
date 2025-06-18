@@ -223,8 +223,8 @@ async def get_thumbnail(image_url: str, ext="jpg") -> str:
         return str(thumbnail_path)
 
     image_path = await get_image(image_url, ext)
-    if is_gif(image_path):
-        return image_path
+    # if is_gif(image_path):
+    #     return image_path
 
     image = Image.open(image_path)
     width, height = image.size

@@ -72,6 +72,7 @@ async def user_loop():
                     continue_on_tool_call=False,
                     temperature=1,
                 ):
+                    logger.info(green(m))
                     logger.trace(f"LLM output for {green(chat_type)} {blue(target_id)}: {yellow(str(m))}")
                     pass
                 logger.info(f"Finished processing for target: {green(chat_type)} {blue(target_id)}")

@@ -60,9 +60,21 @@ class DockerRunManager:
         loop.create_task(self._initial_check())
 
     async def _initial_check(self):
-        container_id = await self._get_container_id_by_name()
-        if container_id:
-            self._start_monitoring_tasks()
+        try:
+            container_id = await self._get_container_id_by_name()
+            if container_id:
+                # Check if container is actually running
+                status = await self._get_container_state_by_id(container_id)
+                if status in ["running"]:
+                    await self.set_state(DockerContainerState.RUNNING)
+                    self._start_monitoring_tasks()
+                elif status in ["exited", "dead"]:
+                    await self.set_state(DockerContainerState.STOPPED)
+                else:
+                    # For other states, start monitoring to track changes
+                    self._start_monitoring_tasks()
+        except Exception as e:
+            logger.warning(f"Initial check failed for container {blue(self.name)}: {e}")
 
     @property
     def current_state(self) -> Union[DockerContainerState, str]:
@@ -136,13 +148,19 @@ class DockerRunManager:
          return await self._run_subprocess("docker", "inspect", "-f", "{{.State.Status}}", container_id)
 
     def _start_monitoring_tasks(self):
-        if not self._monitor_tasks:
-            task1 = asyncio.create_task(self._monitor_docker_state())
-            task2 = asyncio.create_task(self._monitor_logs_for_custom_states())
-            self._monitor_tasks.add(task1)
-            self._monitor_tasks.add(task2)
-            task1.add_done_callback(self._monitor_tasks.discard)
-            task2.add_done_callback(self._monitor_tasks.discard)
+        # Ensure no old tasks are running
+        for task in self._monitor_tasks:
+            if not task.done():
+                task.cancel()
+        self._monitor_tasks.clear()
+        
+        # Start new monitoring tasks
+        task1 = asyncio.create_task(self._monitor_docker_state())
+        task2 = asyncio.create_task(self._monitor_logs_for_custom_states())
+        self._monitor_tasks.add(task1)
+        self._monitor_tasks.add(task2)
+        task1.add_done_callback(self._monitor_tasks.discard)
+        task2.add_done_callback(self._monitor_tasks.discard)
 
     async def start(self):
         if self.current_state not in [DockerContainerState.PENDING, DockerContainerState.STOPPED, DockerContainerState.ERROR]:
@@ -161,7 +179,47 @@ class DockerRunManager:
                 await self.set_state(DockerContainerState.ERROR)
                 return
         else:
-            await self._run_subprocess("docker", "start", container_id)
+            # If container exists, stop and remove it first, then create a new one
+            logger.info(f"Found existing container: {blue(self.name)}. Stopping and removing it first...")
+            
+            # Stop any existing monitoring tasks first to prevent conflicts
+            for task in self._monitor_tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*self._monitor_tasks, return_exceptions=True)
+            self._monitor_tasks.clear()
+            
+            # Get current container status
+            container_status = await self._get_container_state_by_id(container_id)
+            
+            # Stop container with timeout (graceful stop)
+            if container_status in ["running", "paused"]:
+                stop_result = await self._run_subprocess("docker", "stop", "--time", "10", container_id)
+                if stop_result is None:
+                    logger.warning(f"Failed to gracefully stop container {blue(self.name)}, forcing kill...")
+                    await self._run_subprocess("docker", "kill", container_id)
+                
+                # Wait a bit for container to fully stop
+                await asyncio.sleep(1)
+            
+            # Remove container (force if necessary)
+            rm_result = await self._run_subprocess("docker", "rm", container_id)
+            if rm_result is None:
+                logger.warning(f"Failed to remove container {blue(self.name)}, forcing removal...")
+                rm_result = await self._run_subprocess("docker", "rm", "-f", container_id)
+                if rm_result is None:
+                    logger.error(f"Failed to force remove container {blue(self.name)}")
+                    await self.set_state(DockerContainerState.ERROR)
+                    return
+            
+            # Create new container
+            run_cmd = self._build_docker_run_command()
+            new_container_id = await self._run_subprocess(*run_cmd)
+
+            if not new_container_id:
+                logger.error(f"Failed to create container: {blue(self.name)}")
+                await self.set_state(DockerContainerState.ERROR)
+                return
 
         self._start_monitoring_tasks()
 

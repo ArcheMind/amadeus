@@ -18,3 +18,4 @@ loguru
 pyinstaller
 isort
 uvicorn[standard]
+psutil

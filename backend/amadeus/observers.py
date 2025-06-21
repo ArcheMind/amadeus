@@ -1,8 +1,9 @@
 import asyncio
 import copy
 from hashlib import md5
+from typing import Dict, Any, Protocol, List, Optional
+
 import yaml
-from typing import Dict, Any, Protocol, List, Optional, Set
 from loguru import logger
 
 from amadeus.common import yellow, blue, green
@@ -48,21 +49,6 @@ def embed_config(current_item, config_data):
             
     return embedded_item
 
-def digest_config_data(config_data: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """
-    Flattens and processes config data for easier use.
-    It fully resolves and embeds all nested configurations for each app.
-    """
-    apps = config_data.get("apps", [])
-    
-    processed_apps = []
-    for app in apps:
-        processed_app = embed_config(app, config_data)
-        if processed_app:
-            processed_apps.append(processed_app)
-            
-    return processed_apps
-
 
 class ConfigObserver(Protocol):
     async def update(self, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -107,32 +93,19 @@ class BaseConfigObserver:
         3. Compare and apply changes if needed
         4. Merge updated state back
         """
-        observer_name = self.__class__.__name__
-        logger.debug(f"{observer_name} update() starting")
-        
         # Extract observer-specific view
         desired_config = self.extract_observer_config(full_config)
-        logger.debug(f"{observer_name} extracted desired config: {desired_config}")
         
         # Read current state from external resources
         current_config = await self.config_from_state()
-        logger.debug(f"{observer_name} read current config: {current_config}")
         
         # Compare and apply changes if needed
         if not self._configs_equal(current_config, desired_config):
-            logger.debug(f"{observer_name} configs differ, applying changes")
             await self.config_to_state(desired_config)
-        else:
-            logger.debug(f"{observer_name} configs are equal, no changes needed")
         
         # Read final state and merge back
         final_config = await self.config_from_state()
-        logger.debug(f"{observer_name} final config from state: {final_config}")
-        
-        result_config = self.merge_observer_config(full_config, final_config)
-        logger.debug(f"{observer_name} merged result config apps count: {len(result_config.get('apps', []))}")
-        
-        return result_config
+        return self.merge_observer_config(full_config, final_config)
     
     def _configs_equal(self, config1: Dict[str, Any], config2: Dict[str, Any]) -> bool:
         """Compare two configurations for equality."""
@@ -154,19 +127,9 @@ class IMObserver(BaseConfigObserver):
         im_apps = []
         for app in full_config.get("apps", []):
             if app.get("managed", False):
-                # Ensure required fields are not empty strings (schema validation)
-                app_name = app.get("name", "")
-                if not app_name or app_name.strip() == "":
-                    logger.warning(f"IMObserver: skipping app with empty name: {app}")
-                    continue
-                    
-                account = app.get("account", "default")
-                if not account or account.strip() == "":
-                    account = "default"
-                
                 im_app = {
-                    "name": app_name,
-                    "account": account,
+                    "name": app["name"],
+                    "account": app.get("account", "default"),
                     "managed": app["managed"],
                     "onebot_server": app.get("onebot_server", ""),
                     "_connection_status": app.get("_connection_status", "disconnected"),
@@ -181,30 +144,15 @@ class IMObserver(BaseConfigObserver):
         
         # Create lookup map for observer apps
         observer_apps = {app["name"]: app for app in observer_config.get("apps", [])}
-        logger.debug(f"IMObserver merge: observer apps map: {list(observer_apps.keys())}")
         
         # Update corresponding apps in full config
-        updated_apps = []
         for app in result_config.get("apps", []):
             if app["name"] in observer_apps:
                 observer_app = observer_apps[app["name"]]
                 # Only update IM-managed fields
-                old_onebot = app.get("onebot_server", "")
-                old_status = app.get("_connection_status", "")
-                
                 app["onebot_server"] = observer_app["onebot_server"]
                 app["_connection_status"] = observer_app["_connection_status"]
                 
-                logger.debug(f"IMObserver merge: updated app {blue(app['name'])}: onebot_server '{old_onebot}' -> '{app['onebot_server']}', status '{old_status}' -> '{app['_connection_status']}'")
-                
-                # Check for empty strings that might cause validation errors
-                empty_fields = [k for k, v in app.items() if v == ""]
-                if empty_fields:
-                    logger.warning(f"IMObserver merge: app {blue(app['name'])} has empty fields: {empty_fields}")
-                
-                updated_apps.append(app["name"])
-                
-        logger.debug(f"IMObserver merge: updated {len(updated_apps)} apps: {updated_apps}")
         return result_config
 
     async def config_to_state(self, config: Dict[str, Any]) -> None:
@@ -260,7 +208,6 @@ class IMObserver(BaseConfigObserver):
         
         # Get containers from Docker using the unified prefix
         containers = await DockerRunManager.get_containers_by_prefix("im-")
-        logger.debug(f"IMObserver config_from_state found {len(containers)} containers")
         
         for container in containers:
             # Extract app info from container labels and name
@@ -272,16 +219,10 @@ class IMObserver(BaseConfigObserver):
             
             # Extract account from container name (format: im-{hash}-{account})
             parts = name.split('-')
-            account = parts[2] if len(parts) >= 3 and parts[2] else "default"
-            # Ensure account is not empty (required by schema minLength: 1)  
-            if not account or account.strip() == "":
-                account = "default"
+            account = parts[2] if len(parts) >= 3 else "default"
             
             # Get app name from labels, or derive from container name
             app_name = labels.get("amadeus.app.name", name)
-            # Ensure app_name is not empty (required by schema minLength: 1)
-            if not app_name or app_name.strip() == "":
-                app_name = name if name else f"container_{container.get('id', 'unknown')[:8]}"
             
             # Determine OneBot server URL
             onebot_port = ports.get(3001, 0)
@@ -306,18 +247,8 @@ class IMObserver(BaseConfigObserver):
                 "onebot_server": onebot_server,
                 "_connection_status": connection_status,
             }
-            
-            # Log each generated config for debugging
-            logger.debug(f"IMObserver generated config for container {blue(name)}: {app_config}")
-            
-            # Check for empty strings that might cause validation errors
-            empty_fields = [k for k, v in app_config.items() if v == ""]
-            if empty_fields:
-                logger.warning(f"IMObserver found empty fields in config for container {blue(name)}: {empty_fields}")
-            
             current_apps.append(app_config)
         
-        logger.debug(f"IMObserver config_from_state returning {len(current_apps)} apps")
         return {"apps": current_apps}
 
     async def close(self):
@@ -369,8 +300,13 @@ class AmadeusObserver(BaseConfigObserver):
         for app in result_config.get("apps", []):
             if app["name"] in observer_apps:
                 observer_app = observer_apps[app["name"]]
-                # Only update Amadeus-managed fields
+                # Update Amadeus-managed fields
                 app["_process_status"] = observer_app["_process_status"]
+                
+                # Auto-disable failed applications
+                if observer_app["_process_status"] in ["stopped", "error"] and app.get("enable", False):
+                    logger.warning(f"App {blue(app['name'])} failed to start, disabling it")
+                    app["enable"] = False
                 
         return result_config
 
@@ -412,13 +348,22 @@ class AmadeusObserver(BaseConfigObserver):
                     args=(app_yaml, worker_key),
                     stream_logs=True,
                 )
+                
+                # Store metadata for config recovery
+                manager.metadata = {
+                    "app_name": app_config["name"],
+                    "config_hash": app_config["config_hash"],
+                    "processed_config": app_config["processed_config"],
+                }
+                
                 await manager.start()
                 await asyncio.sleep(3)
 
                 if manager.current_state == MultiprocessState.RUNNING:
                     self.amadeus_workers[worker_key] = manager
                 else:
-                    await manager.close()
+                    # Keep failed manager for state synchronization
+                    self.amadeus_workers[worker_key] = manager
                     logger.error(f"Failed to start Amadeus worker {blue(worker_key)}")
 
         # Start process watcher if needed
@@ -427,24 +372,70 @@ class AmadeusObserver(BaseConfigObserver):
             self.watcher = asyncio.create_task(self.watch_processes())
 
     async def config_from_state(self) -> Dict[str, Any]:
-        """Read current Amadeus configuration from running processes."""
+        """Read current Amadeus configuration from actual running processes."""
         current_apps = []
         
+        # Check all managed workers and their real process states
         for worker_key, manager in self.amadeus_workers.items():
-            # Extract app info from worker name
-            # Format: amadeus-{hash}
-            config_hash = worker_key.replace("amadeus-", "")
+            # Check real process state (not just cached manager state)
+            real_process_state = await self._check_real_process_state(manager)
+            
+            # Get app info from stored metadata
+            metadata = getattr(manager, 'metadata', {})
+            app_name = metadata.get("app_name", f"amadeus_app_{worker_key.replace('amadeus-', '')}")
+            config_hash = metadata.get("config_hash", worker_key.replace("amadeus-", ""))
+            processed_config = metadata.get("processed_config")
             
             app_config = {
-                "name": f"app_for_{worker_key}",  # This should be improved
+                "name": app_name,
                 "enable": True,
-                "processed_config": {},  # Placeholder since we can't reconstruct original config
                 "config_hash": config_hash,
-                "_process_status": "running" if manager.current_state == MultiprocessState.RUNNING else "stopped",
+                "_process_status": real_process_state,
+                "processed_config": processed_config,
             }
             current_apps.append(app_config)
         
         return {"apps": current_apps}
+    
+    async def _check_real_process_state(self, manager: MultiprocessManager) -> str:
+        """Check the actual process state, not just the manager's cached state."""
+        import psutil
+        
+        try:
+            if not manager._process:
+                return "stopped"
+            
+            # Check if process actually exists and is running
+            try:
+                process = psutil.Process(manager._process.pid)
+                if process.is_running():
+                    status = process.status()
+                    if status == psutil.STATUS_RUNNING:
+                        return "running"
+                    elif status in [psutil.STATUS_SLEEPING, psutil.STATUS_DISK_SLEEP]:
+                        return "running"  # Still considered running
+                    elif status == psutil.STATUS_ZOMBIE:
+                        return "stopped"
+                    else:
+                        return "unknown"
+                else:
+                    return "stopped"
+            except psutil.NoSuchProcess:
+                return "stopped"
+                
+        except Exception as e:
+            logger.warning(f"Failed to check real process state for {manager.name}: {e}")
+            # Fallback to manager's cached state
+            if manager.current_state == MultiprocessState.RUNNING:
+                return "running"
+            elif manager.current_state == MultiprocessState.STARTING:
+                return "starting"
+            elif manager.current_state == MultiprocessState.STOPPING:
+                return "stopping"
+            elif manager.current_state == MultiprocessState.ERROR:
+                return "error"
+            else:
+                return "stopped"
 
     async def watch_processes(self):
         """Watch worker processes and clean up failed ones."""

@@ -60,6 +60,7 @@ class MultiprocessManager:
         self._process: Optional[multiprocessing.Process] = None
         self._log_queue: Optional[multiprocessing.Queue] = None
         self._monitor_tasks: Set[asyncio.Task] = set()
+        self.metadata: Dict[str, Any] = {}  # For storing additional metadata
         self._initialized = True
 
     @property

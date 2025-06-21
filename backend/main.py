@@ -57,16 +57,16 @@ app = fastapi.FastAPI(
 
 # Set up CORS middleware
 origins = [
-    "http://localhost:5173",  # Frontend dev server
+    "http://localhost:5173",  # Frontend dev server  
+    "http://localhost:5174",  # Alternative frontend dev server
     "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
     "file://",  # Allow file:// protocol for production
-    "http://localhost:*",  # Allow any localhost port
-    "http://127.0.0.1:*",  # Allow any localhost port
 ]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=origins + [f"http://localhost:{port}" for port in range(3000, 9000)],  # Allow common dev ports
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

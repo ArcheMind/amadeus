@@ -7,7 +7,7 @@ from amadeus.const import CACHE_DIR
 
 
 
-def get_napcat_manager(config_name: str, account: str) -> DockerRunManager:
+def get_napcat_manager(config_name: str, account: str, app_name: str = None) -> DockerRunManager:
     instance_path = CACHE_DIR / "im" / f"{config_name}"
     napcat_config_path = instance_path / "napcat" / "config"
     ntqq_path = instance_path / "ntqq"
@@ -32,6 +32,14 @@ def get_napcat_manager(config_name: str, account: str) -> DockerRunManager:
         "ONLINE": r"\[Notice\] \[OneBot11\] \[network\] 配置加载",
     }
 
+    # Add labels for configuration tracking
+    labels = {
+        "amadeus.app.name": app_name or config_name,
+        "amadeus.app.account": account,
+        "amadeus.app.type": "im",
+        "amadeus.manager.type": "napcat",
+    }
+
     manager = DockerRunManager(
         image_name="mlikiowa/napcat-docker:latest",
         name=config_name,
@@ -41,6 +49,7 @@ def get_napcat_manager(config_name: str, account: str) -> DockerRunManager:
             str(napcat_config_path.resolve()): "/app/napcat/config",
             str(ntqq_path.resolve()): "/app/.config/QQ",
         },
-        env=env_vars
+        env=env_vars,
+        label=labels
     )
     return manager

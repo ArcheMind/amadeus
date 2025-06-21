@@ -2,7 +2,7 @@ import asyncio
 import copy
 from hashlib import md5
 import yaml
-from typing import Dict, Any, Protocol, List, Optional
+from typing import Dict, Any, Protocol, List, Optional, Set
 from loguru import logger
 
 from amadeus.common import yellow, blue, green
@@ -71,68 +71,257 @@ class ConfigObserver(Protocol):
     async def close(self):
         ...
 
-class IMObserver:
+
+class BaseConfigObserver:
+    """
+    Base class for config observers that synchronize external resources with configuration.
+    
+    This implements the view-based synchronization pattern:
+    1. Extract observer-specific view from full config
+    2. Read current state from external resources (config_from_state)
+    3. Compare with desired state and apply changes if needed (config_to_state)
+    4. Merge updated state back into full config
+    """
+    
+    def extract_observer_config(self, full_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract observer-specific configuration view from full config."""
+        raise NotImplementedError("Subclasses must implement extract_observer_config")
+    
+    def merge_observer_config(self, full_config: Dict[str, Any], observer_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge observer configuration back into full config."""
+        raise NotImplementedError("Subclasses must implement merge_observer_config")
+    
+    async def config_to_state(self, config: Dict[str, Any]) -> None:
+        """Apply configuration to external state (e.g., start/stop containers)."""
+        raise NotImplementedError("Subclasses must implement config_to_state")
+    
+    async def config_from_state(self) -> Dict[str, Any]:
+        """Read current configuration from external state (e.g., query running containers)."""
+        raise NotImplementedError("Subclasses must implement config_from_state")
+    
+    async def update(self, full_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Main update method that implements the synchronization pattern:
+        1. Extract observer view
+        2. Read current state
+        3. Compare and apply changes if needed
+        4. Merge updated state back
+        """
+        observer_name = self.__class__.__name__
+        logger.debug(f"{observer_name} update() starting")
+        
+        # Extract observer-specific view
+        desired_config = self.extract_observer_config(full_config)
+        logger.debug(f"{observer_name} extracted desired config: {desired_config}")
+        
+        # Read current state from external resources
+        current_config = await self.config_from_state()
+        logger.debug(f"{observer_name} read current config: {current_config}")
+        
+        # Compare and apply changes if needed
+        if not self._configs_equal(current_config, desired_config):
+            logger.debug(f"{observer_name} configs differ, applying changes")
+            await self.config_to_state(desired_config)
+        else:
+            logger.debug(f"{observer_name} configs are equal, no changes needed")
+        
+        # Read final state and merge back
+        final_config = await self.config_from_state()
+        logger.debug(f"{observer_name} final config from state: {final_config}")
+        
+        result_config = self.merge_observer_config(full_config, final_config)
+        logger.debug(f"{observer_name} merged result config apps count: {len(result_config.get('apps', []))}")
+        
+        return result_config
+    
+    def _configs_equal(self, config1: Dict[str, Any], config2: Dict[str, Any]) -> bool:
+        """Compare two configurations for equality."""
+        return config1 == config2
+    
+    async def close(self):
+        """Close observer and clean up resources."""
+        pass
+
+
+class IMObserver(BaseConfigObserver):
+    """Observer for managing IM containers based on configuration."""
+    
     def __init__(self):
         self.managed_ims: Dict[str, DockerRunManager] = {}
 
-    async def update(self, config: Dict[str, Any]) -> Dict[str, Any]:
+    def extract_observer_config(self, full_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract IM-specific view: only managed=true apps with required fields."""
+        im_apps = []
+        for app in full_config.get("apps", []):
+            if app.get("managed", False):
+                # Ensure required fields are not empty strings (schema validation)
+                app_name = app.get("name", "")
+                if not app_name or app_name.strip() == "":
+                    logger.warning(f"IMObserver: skipping app with empty name: {app}")
+                    continue
+                    
+                account = app.get("account", "default")
+                if not account or account.strip() == "":
+                    account = "default"
+                
+                im_app = {
+                    "name": app_name,
+                    "account": account,
+                    "managed": app["managed"],
+                    "onebot_server": app.get("onebot_server", ""),
+                    "_connection_status": app.get("_connection_status", "disconnected"),
+                }
+                im_apps.append(im_app)
+        
+        return {"apps": im_apps}
+
+    def merge_observer_config(self, full_config: Dict[str, Any], observer_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge IM observer results back into full config."""
+        result_config = copy.deepcopy(full_config)
+        
+        # Create lookup map for observer apps
+        observer_apps = {app["name"]: app for app in observer_config.get("apps", [])}
+        logger.debug(f"IMObserver merge: observer apps map: {list(observer_apps.keys())}")
+        
+        # Update corresponding apps in full config
+        updated_apps = []
+        for app in result_config.get("apps", []):
+            if app["name"] in observer_apps:
+                observer_app = observer_apps[app["name"]]
+                # Only update IM-managed fields
+                old_onebot = app.get("onebot_server", "")
+                old_status = app.get("_connection_status", "")
+                
+                app["onebot_server"] = observer_app["onebot_server"]
+                app["_connection_status"] = observer_app["_connection_status"]
+                
+                logger.debug(f"IMObserver merge: updated app {blue(app['name'])}: onebot_server '{old_onebot}' -> '{app['onebot_server']}', status '{old_status}' -> '{app['_connection_status']}'")
+                
+                # Check for empty strings that might cause validation errors
+                empty_fields = [k for k, v in app.items() if v == ""]
+                if empty_fields:
+                    logger.warning(f"IMObserver merge: app {blue(app['name'])} has empty fields: {empty_fields}")
+                
+                updated_apps.append(app["name"])
+                
+        logger.debug(f"IMObserver merge: updated {len(updated_apps)} apps: {updated_apps}")
+        return result_config
+
+    async def config_to_state(self, config: Dict[str, Any]) -> None:
+        """Apply IM configuration to docker containers."""
         logger.info(f"{yellow('--- IMObserver applying configuration ---')}")
 
-        im_info_map = {}
+        # Build target state map
+        target_ims = {}
         for app_config in config.get("apps", []):
             if app_config.get("managed", False):
                 name_hash = md5(app_config["name"].encode()).hexdigest()[:10]
                 name = f"im-{name_hash}-{app_config.get('account', 'default')}"
-                im_info_map[name] = {
-                    "name": name,
-                    "config": app_config,  # Direct reference to original app config
-                }
+                target_ims[name] = app_config
 
-        prev_ims = set(self.managed_ims.keys())
-        current_ims = set(im_info_map.keys())
+        current_ims = set(self.managed_ims.keys())
+        target_ims_set = set(target_ims.keys())
 
-        to_remove_ims = prev_ims - current_ims
-        to_add_ims = current_ims - prev_ims
-
-        if to_remove_ims:
-            logger.info(f"Removing {len(to_remove_ims)} IM manager(s): {', '.join(map(blue, to_remove_ims))}")
-            for im_key in to_remove_ims:
+        # Remove obsolete containers
+        to_remove = current_ims - target_ims_set
+        if to_remove:
+            logger.info(f"Removing {len(to_remove)} IM manager(s): {', '.join(map(blue, to_remove))}")
+            for im_key in to_remove:
                 if im_key in self.managed_ims:
                     manager = self.managed_ims[im_key]
                     await manager.close()
                     del self.managed_ims[im_key]
 
-        if to_add_ims:
-            logger.info(f"Adding {len(to_add_ims)} IM manager(s): {', '.join(map(blue, to_add_ims))}")
-            for im_key in to_add_ims:
-                app_ref = im_info_map[im_key]["config"]  # Direct reference
+        # Add new containers
+        to_add = target_ims_set - current_ims
+        if to_add:
+            logger.info(f"Adding {len(to_add)} IM manager(s): {', '.join(map(blue, to_add))}")
+            for im_key in to_add:
+                app_config = target_ims[im_key]
                 manager = get_napcat_manager(
                     config_name=im_key,
-                    account=app_ref["account"],
+                    account=app_config["account"],
+                    app_name=app_config["name"],
                 )
                 await manager.start()
                 self.managed_ims[im_key] = manager
+                
+                # Wait for connection
                 try:
                     await asyncio.sleep(0.2)
                     while manager.current_state not in ["LOGIN", "ONLINE"] and manager.running:
                         await manager.state_changed.wait()
+                except Exception as e:
+                    logger.error(f"Error waiting for IM manager {blue(im_key)}: {e}")
 
-                    if not manager.running:
-                        logger.error(f"Failed to start managed IM {blue(im_key)}. It has been removed.")
-                        await manager.close()
-                        del self.managed_ims[im_key]
-                        # Update config to reflect failure, using the direct reference
-                        app_ref["managed"] = False
-                        app_ref["_managed_status"] = "Failed to start"
+    async def config_from_state(self) -> Dict[str, Any]:
+        """Read current IM configuration from running containers."""
+        current_apps = []
+        
+        # Get containers from Docker using the unified prefix
+        containers = await DockerRunManager.get_containers_by_prefix("im-")
+        logger.debug(f"IMObserver config_from_state found {len(containers)} containers")
+        
+        for container in containers:
+            # Extract app info from container labels and name
+            labels = container.get("labels", {})
+            name = container.get("name", "")
+            ports = container.get("ports", {})
+            running = container.get("running", False)
+            state = container.get("state", "unknown")
+            
+            # Extract account from container name (format: im-{hash}-{account})
+            parts = name.split('-')
+            account = parts[2] if len(parts) >= 3 and parts[2] else "default"
+            # Ensure account is not empty (required by schema minLength: 1)  
+            if not account or account.strip() == "":
+                account = "default"
+            
+            # Get app name from labels, or derive from container name
+            app_name = labels.get("amadeus.app.name", name)
+            # Ensure app_name is not empty (required by schema minLength: 1)
+            if not app_name or app_name.strip() == "":
+                app_name = name if name else f"container_{container.get('id', 'unknown')[:8]}"
+            
+            # Determine OneBot server URL
+            onebot_port = ports.get(3001, 0)
+            onebot_server = f"ws://localhost:{onebot_port}" if onebot_port > 0 and running else ""
+            
+            # Determine connection status
+            connection_status = "disconnected"
+            if running:
+                if name in self.managed_ims:
+                    manager = self.managed_ims[name]
+                    if manager.current_state in ["LOGIN", "ONLINE"]:
+                        connection_status = "connected"
                     else:
-                        # Update config on success, using the direct reference
-                        app_ref["onebot_server"] = f"ws://localhost:{manager.ports[3001]}"
-                        logger.info(f"Managed IM {blue(im_key)} started. App {blue(app_ref['name'])} configured with onebot_server {app_ref['onebot_server']}")
-                finally:
-                    pass
-        return config
+                        connection_status = "connecting"
+                else:
+                    connection_status = "unknown"
+            
+            app_config = {
+                "name": app_name,
+                "account": account,
+                "managed": True,
+                "onebot_server": onebot_server,
+                "_connection_status": connection_status,
+            }
+            
+            # Log each generated config for debugging
+            logger.debug(f"IMObserver generated config for container {blue(name)}: {app_config}")
+            
+            # Check for empty strings that might cause validation errors
+            empty_fields = [k for k, v in app_config.items() if v == ""]
+            if empty_fields:
+                logger.warning(f"IMObserver found empty fields in config for container {blue(name)}: {empty_fields}")
+            
+            current_apps.append(app_config)
+        
+        logger.debug(f"IMObserver config_from_state returning {len(current_apps)} apps")
+        return {"apps": current_apps}
 
     async def close(self):
+        """Close all managed IM containers."""
         active_ims = list(self.managed_ims.values())
         if active_ims:
             logger.info(f"Closing {len(active_ims)} IM manager(s)...")
@@ -141,73 +330,124 @@ class IMObserver:
         self.managed_ims.clear()
 
 
-class AmadeusObserver:
+class AmadeusObserver(BaseConfigObserver):
+    """Observer for managing Amadeus worker processes based on configuration."""
+    
     def __init__(self):
         self.amadeus_workers: Dict[str, MultiprocessManager] = {}
         self.watcher: Optional[asyncio.Task] = None
 
-    async def update(self, config: Dict[str, Any]) -> Dict[str, Any]:
-        logger.info(f"{yellow('--- AmadeusObserver applying configuration ---')}")
-
-        app_info_map = {}
-        for original_app_config in config.get("apps", []):
-            if original_app_config.get("enable", False):
-                processed_app_config = embed_config(original_app_config, config)
-                app_yaml = yaml.safe_dump(processed_app_config, allow_unicode=True, sort_keys=True)
+    def extract_observer_config(self, full_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract Amadeus-specific view: only enable=true apps with required fields."""
+        amadeus_apps = []
+        for app in full_config.get("apps", []):
+            if app.get("enable", False):
+                # Create processed config for hash calculation
+                processed_app = embed_config(app, full_config)
+                app_yaml = yaml.safe_dump(processed_app, allow_unicode=True, sort_keys=True)
                 app_hash = md5(app_yaml.encode()).hexdigest()[:10]
-                name = f"amadeus-{app_hash}"
-                app_info_map[name] = {
-                    "name": name,
-                    "original_config": original_app_config,
-                    "processed_yaml": app_yaml,
+                
+                amadeus_app = {
+                    "name": app["name"],
+                    "enable": app["enable"],
+                    "processed_config": processed_app,
+                    "config_hash": app_hash,
+                    "_process_status": app.get("_process_status", "stopped"),
                 }
+                amadeus_apps.append(amadeus_app)
+        
+        return {"apps": amadeus_apps}
 
-        prev_process_hashes = set(self.amadeus_workers.keys())
-        current_app_hashes = set(app_info_map.keys())
+    def merge_observer_config(self, full_config: Dict[str, Any], observer_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge Amadeus observer results back into full config."""
+        result_config = copy.deepcopy(full_config)
+        
+        # Create lookup map for observer apps
+        observer_apps = {app["name"]: app for app in observer_config.get("apps", [])}
+        
+        # Update corresponding apps in full config
+        for app in result_config.get("apps", []):
+            if app["name"] in observer_apps:
+                observer_app = observer_apps[app["name"]]
+                # Only update Amadeus-managed fields
+                app["_process_status"] = observer_app["_process_status"]
+                
+        return result_config
 
-        to_remove_amadeus = prev_process_hashes - current_app_hashes
-        to_add_amadeus = current_app_hashes - prev_process_hashes
+    async def config_to_state(self, config: Dict[str, Any]) -> None:
+        """Apply Amadeus configuration to worker processes."""
+        logger.info(f"{yellow('--- AmadeusObserver applying configuration ---')}")
+        
+        # Build target state map
+        target_workers = {}
+        for app_config in config.get("apps", []):
+            if app_config.get("enable", False):
+                worker_name = f"amadeus-{app_config['config_hash']}"
+                target_workers[worker_name] = app_config
 
-        if to_remove_amadeus:
-            logger.info(f"Stopping {len(to_remove_amadeus)} Amadeus worker(s): {', '.join(map(blue, to_remove_amadeus))}")
-            for app_hash in to_remove_amadeus:
-                if app_hash in self.amadeus_workers:
-                    manager = self.amadeus_workers[app_hash]
+        current_workers = set(self.amadeus_workers.keys())
+        target_workers_set = set(target_workers.keys())
+
+        # Remove obsolete workers
+        to_remove = current_workers - target_workers_set
+        if to_remove:
+            logger.info(f"Stopping {len(to_remove)} Amadeus worker(s): {', '.join(map(blue, to_remove))}")
+            for worker_key in to_remove:
+                if worker_key in self.amadeus_workers:
+                    manager = self.amadeus_workers[worker_key]
                     await manager.close()
-                    del self.amadeus_workers[app_hash]
+                    del self.amadeus_workers[worker_key]
 
-        if to_add_amadeus:
-            logger.info(f"Starting {len(to_add_amadeus)} Amadeus worker(s): {', '.join(map(blue, to_add_amadeus))}")
-            for app_hash in to_add_amadeus:
-                app_detail = app_info_map[app_hash]
-                app_name = app_detail["name"]
-                app_yaml = app_detail["processed_yaml"]
-                original_app_ref = app_detail["original_config"]
+        # Add new workers
+        to_add = target_workers_set - current_workers
+        if to_add:
+            logger.info(f"Starting {len(to_add)} Amadeus worker(s): {', '.join(map(blue, to_add))}")
+            for worker_key in to_add:
+                app_config = target_workers[worker_key]
+                app_yaml = yaml.safe_dump(app_config["processed_config"], allow_unicode=True, sort_keys=True)
 
                 manager = MultiprocessManager(
-                    name=app_name,
+                    name=worker_key,
                     target=run_amadeus_app_target,
-                    args=(app_yaml, app_name),
+                    args=(app_yaml, worker_key),
                     stream_logs=True,
                 )
                 await manager.start()
-
                 await asyncio.sleep(3)
 
-                if manager.current_state != MultiprocessState.RUNNING:
-                    await manager.close()
-                    logger.error(f"Failed to start Amadeus worker {blue(app_name)}. It has been disabled.")
-
-                    original_app_ref["enable"] = False
+                if manager.current_state == MultiprocessState.RUNNING:
+                    self.amadeus_workers[worker_key] = manager
                 else:
-                    self.amadeus_workers[app_hash] = manager
+                    await manager.close()
+                    logger.error(f"Failed to start Amadeus worker {blue(worker_key)}")
 
-        if self.watcher is None or self.watcher.done():
-            logger.info("Process watcher is not running. Starting it now.")
+        # Start process watcher if needed
+        if self.amadeus_workers and (self.watcher is None or self.watcher.done()):
+            logger.info("Starting process watcher.")
             self.watcher = asyncio.create_task(self.watch_processes())
-        return config
+
+    async def config_from_state(self) -> Dict[str, Any]:
+        """Read current Amadeus configuration from running processes."""
+        current_apps = []
+        
+        for worker_key, manager in self.amadeus_workers.items():
+            # Extract app info from worker name
+            # Format: amadeus-{hash}
+            config_hash = worker_key.replace("amadeus-", "")
+            
+            app_config = {
+                "name": f"app_for_{worker_key}",  # This should be improved
+                "enable": True,
+                "processed_config": {},  # Placeholder since we can't reconstruct original config
+                "config_hash": config_hash,
+                "_process_status": "running" if manager.current_state == MultiprocessState.RUNNING else "stopped",
+            }
+            current_apps.append(app_config)
+        
+        return {"apps": current_apps}
 
     async def watch_processes(self):
+        """Watch worker processes and clean up failed ones."""
         while True:
             try:
                 for process_hash, manager in list(self.amadeus_workers.items()):
@@ -224,6 +464,7 @@ class AmadeusObserver:
                 logger.error(f"Error in process watcher: {e}")
     
     async def close(self):
+        """Close all managed Amadeus workers."""
         if self.watcher:
             self.watcher.cancel()
             try:

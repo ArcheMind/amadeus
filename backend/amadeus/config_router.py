@@ -204,6 +204,22 @@ class ConfigRouter:
             self._fill_defaults_recursive(schema, instance_data)
             validate(instance=instance_data, schema=schema)
         except jsonschema_exceptions.ValidationError as e:
+            # Add detailed debugging information
+            logger.error(f"Validation error for class '{class_name}':")
+            logger.error(f"  Error: {e.message}")
+            logger.error(f"  Path: {e.absolute_path}")
+            logger.error(f"  Failed value: {e.instance}")
+            logger.error(f"  Schema constraint: {e.schema}")
+            logger.error(f"  Full instance data: {instance_data}")
+            
+            # Also log fields with empty strings
+            empty_fields = []
+            for key, value in instance_data.items():
+                if value == "":
+                    empty_fields.append(key)
+            if empty_fields:
+                logger.error(f"  Fields with empty strings: {empty_fields}")
+            
             raise HTTPException(
                 status_code=400, detail=f"Validation error: {e.message}"
             )

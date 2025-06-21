@@ -104,6 +104,8 @@ class DockerRunManager:
                         cmd.extend(["-v", f"{k}:{v}"])
                     elif key == "env":
                         cmd.extend(["-e", f"{k}={v}"])
+                    elif key == "label":
+                        cmd.extend(["-l", f"{k}={v}"])
             elif isinstance(value, bool) and value:
                 cmd.append(option)
             elif isinstance(value, str):
@@ -392,6 +394,112 @@ class DockerRunManager:
             return True
         except (asyncio.TimeoutError, asyncio.CancelledError):
             return False
+
+    async def get_container_labels(self) -> Dict[str, str]:
+        """Get container labels for configuration retrieval."""
+        container_id = await self._get_container_id_by_name()
+        if not container_id:
+            return {}
+        
+        try:
+            import json
+            result = await self._run_subprocess("docker", "inspect", "-f", "{{json .Config.Labels}}", container_id)
+            if result:
+                return json.loads(result) or {}
+        except Exception as e:
+            logger.warning(f"Failed to get labels for container {self.name}: {e}")
+        
+        return {}
+
+    @classmethod
+    async def get_containers_by_prefix(cls, prefix: str) -> List[Dict[str, Any]]:
+        """Get all containers with the specified name prefix and their metadata."""
+        try:
+            import json
+            # Get all containers with the prefix
+            result = await cls._run_subprocess_static("docker", "ps", "-a", "--filter", f"name=^{prefix}", "--format", "{{.ID}}")
+            
+            if not result:
+                return []
+            
+            container_ids = result.strip().split('\n')
+            containers = []
+            
+            for container_id in container_ids:
+                if not container_id:
+                    continue
+                    
+                # Get detailed container info
+                inspect_result = await cls._run_subprocess_static("docker", "inspect", container_id)
+                if inspect_result:
+                    inspect_data = json.loads(inspect_result)
+                    if inspect_data:
+                        container_info = inspect_data[0]
+                        config = container_info.get("Config", {})
+                        state = container_info.get("State", {})
+                        host_config = container_info.get("HostConfig", {})
+                        
+                        container_data = {
+                            "id": container_id,
+                            "name": container_info.get("Name", "").lstrip("/"),
+                            "image": config.get("Image", ""),
+                            "state": state.get("Status", "unknown"),
+                            "labels": config.get("Labels") or {},
+                            "ports": cls._extract_port_mappings(host_config.get("PortBindings", {})),
+                            "running": state.get("Running", False),
+                        }
+                        containers.append(container_data)
+                        
+            return containers
+            
+        except Exception as e:
+            logger.error(f"Failed to get containers by prefix {prefix}: {e}")
+            return []
+
+    @staticmethod
+    def _extract_port_mappings(port_bindings: Dict[str, Any]) -> Dict[int, int]:
+        """Extract port mappings from Docker port bindings."""
+        ports = {}
+        for container_port, host_bindings in port_bindings.items():
+            if host_bindings and isinstance(host_bindings, list):
+                try:
+                    container_port_num = int(container_port.split('/')[0])
+                    host_port_num = int(host_bindings[0].get('HostPort', 0))
+                    if host_port_num > 0:
+                        ports[container_port_num] = host_port_num
+                except (ValueError, IndexError, AttributeError):
+                    continue
+        return ports
+
+    @staticmethod
+    async def _run_subprocess_static(*args) -> Optional[str]:
+        """Static version of _run_subprocess for class methods."""
+        try:
+            logger.trace(f"Running command: {blue(' '.join(args))}")
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            
+            timeout = 30 if args[1] in ["rm", "kill", "stop"] else 60
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+
+            if proc.returncode != 0:
+                logger.error(f"Command failed with return code {red(str(proc.returncode))}: {blue(' '.join(args))}. Stderr: {red(stderr.decode().strip())}")
+                return None
+            
+            logger.trace(f"Command finished successfully: {blue(' '.join(args))}")
+            return stdout.decode().strip()
+        except asyncio.TimeoutError:
+            logger.error(f"Command timed out: {blue(' '.join(args))}")
+            if proc:
+                proc.kill()
+                await proc.wait()
+            return None
+        except Exception as e:
+            logger.error(f"An unexpected error occurred while running command: {blue(' '.join(args))}. Error: {red(str(e))}")
+            return None
 
     async def close(self):
         # Cancel monitoring tasks

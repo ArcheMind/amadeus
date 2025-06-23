@@ -128,11 +128,6 @@ class QQChat:
             from_message_id,
             count=8,
         )
-        """
-性格比较软萌，但不夸张。喜欢key社的作品《Clannad》(简称cl)，听说了key社新作《夏日口袋》，很感兴趣。你的网名就是来自夏日口袋的角色。
-你认识`aoi~`，他通常很内敛只发幽默表情包，所以你会对他很热情，主动找话题。
-        """
-
         msgs = "".join([await self.render_message(m) for m in messages])
         groupcard = await self.client.get_group_name(self.target_id)
         intro = AMADEUS_CONFIG.character.personality
@@ -153,6 +148,7 @@ class QQChat:
 平时，你会先从每个人的角度出发，从群聊混乱的对话中提取出话题链输出；对于暂时不确定不理解的消息，保持谨慎，避免随便下结论。
 例如:
 ```yaml
+看消息后的情绪：chill
 话题链:
 -
     逻辑:
@@ -211,9 +207,6 @@ class QQChat:
 
 [没有更新的消息]
 ```
-你知道群里都是网友，现实中不认识，大家聊天中经常玩梗和玩笑。
-你也许还想在群里建立一些有趣的关系，或者找点乐子。
-你现在当前心情：chill
 
 请仔细阅读当前群聊内容，分析讨论话题和群成员关系，分析你刚刚发言和别人对你的发言的反应，思考你自身的目的。然后思考你是否需要使用工具。思考并输出你的内心想法
 输出要求：

@@ -2,7 +2,6 @@ from typing import Dict, Any, Optional, List, Callable
 import copy
 from urllib.parse import quote, unquote
 from fastapi import APIRouter, HTTPException, Response
-from jsonschema import validate, exceptions as jsonschema_exceptions
 from loguru import logger
 from pydantic import ValidationError
 
@@ -184,48 +183,22 @@ class ConfigRouter:
                         for item_data in data_node[prop]:
                             self._fill_defaults_recursive(item_schema, item_data)
 
-    async def _validate_instance(
+    async def _prepare_instance_data(
         self,
         class_name: str,
         instance_data: Dict[str, Any],
         schema: Optional[Dict[str, Any]] = None,
     ):
-        """Validate instance data against schema."""
+        """Prepare instance data by filling defaults (validation removed)."""
         if schema is None:
             schema = await self._get_class_schema(class_name)
 
         if not schema:
-            raise HTTPException(
-                status_code=400,
-                detail=f"No schema definition found for class: '{class_name}'",
-            )
+            logger.warning(f"No schema definition found for class: '{class_name}'")
+            return
 
-        try:
-            self._fill_defaults_recursive(schema, instance_data)
-            validate(instance=instance_data, schema=schema)
-        except jsonschema_exceptions.ValidationError as e:
-            # Add detailed debugging information
-            logger.error(f"Validation error for class '{class_name}':")
-            logger.error(f"  Error: {e.message}")
-            logger.error(f"  Path: {e.absolute_path}")
-            logger.error(f"  Failed value: {e.instance}")
-            logger.error(f"  Schema constraint: {e.schema}")
-            logger.error(f"  Full instance data: {instance_data}")
-            
-            # Also log fields with empty strings
-            empty_fields = []
-            for key, value in instance_data.items():
-                if value == "":
-                    empty_fields.append(key)
-            if empty_fields:
-                logger.error(f"  Fields with empty strings: {empty_fields}")
-            
-            raise HTTPException(
-                status_code=400, detail=f"Validation error: {e.message}"
-            )
-        except jsonschema_exceptions.SchemaError as e:
-            logger.error(f"Schema error: {e.message}")
-            raise HTTPException(status_code=500, detail=f"Schema error: {e.message}")
+        # Only fill defaults, no validation
+        self._fill_defaults_recursive(schema, instance_data)
 
     def _setup_routes(self):
         """Setup all the routes for the configuration API."""
@@ -313,7 +286,7 @@ class ConfigRouter:
 
             schema = await self._get_class_schema(class_name)
             self._fill_defaults_recursive(schema, instance_data)
-            await self._validate_instance(class_name, instance_data, schema=schema)
+            # Validation removed - only fill defaults
 
             if "name" not in instance_data:
                 raise HTTPException(
@@ -369,7 +342,7 @@ class ConfigRouter:
 
                 schema = await self._get_class_schema(class_name, instance_name)
                 self._fill_defaults_recursive(schema, instance_data)
-                await self._validate_instance(class_name, instance_data, schema=schema)
+                # Validation removed - only fill defaults
 
                 if instance_data.get("name") != instance_name:
                     raise HTTPException(
@@ -385,11 +358,9 @@ class ConfigRouter:
                 for i, instance in enumerate(existing_instances):
                     if instance.get("name") == instance_name:
                         current_data[class_name][i] = instance_data
-                        if await self._update_config_data(current_data):
-                            return instance_data
-                        else:
-                            # if no changes are made, it is still a success
-                            return instance_data
+                        # Always call _update_config_data, update is successful regardless of return value
+                        await self._update_config_data(current_data)
+                        return instance_data
                 
                 raise HTTPException(
                     status_code=404, detail=f"Instance '{instance_name}' not found"
@@ -422,13 +393,9 @@ class ConfigRouter:
             for i, instance in enumerate(existing_instances):
                 if instance.get("name") == instance_name:
                     del current_data[class_name][i]
-                    if await self._update_config_data(current_data):
-                        return {"status": "success"}
-                    else:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Deletion of instance '{instance_name}' failed",
-                        )
+                    # Always call _update_config_data, deletion is successful regardless of return value
+                    await self._update_config_data(current_data)
+                    return {"status": "success"}
 
             raise HTTPException(
                 status_code=404, detail=f"Instance '{instance_name}' not found"
@@ -468,15 +435,11 @@ class ConfigRouter:
 
             schema = await self._get_class_schema(class_name)
             self._fill_defaults_recursive(schema, data)
-            await self._validate_instance(class_name, data, schema=schema)
+            # Validation removed - only fill defaults
 
             # Get current data and update
             current_data = self.config_data
             current_data[class_name] = data
-            if await self._update_config_data(current_data):
-                return data
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Update of singleton '{class_name}' failed",
-                )
+            # Always call _update_config_data, update is successful regardless of return value
+            await self._update_config_data(current_data)
+            return data

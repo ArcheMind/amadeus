@@ -50,6 +50,7 @@ async def llm(
                     stream=True,
                     temperature=temperature,
                     # top_p=0.9,
+                    max_tokens=4096,
                 )
             else:
                 response = await openai_client.chat.completions.create(
@@ -60,6 +61,7 @@ async def llm(
                     temperature=temperature,
                     # top_p=0.9,
                     tool_choice="auto",
+                    max_tokens=4096,
                 )
 
             sentence = []

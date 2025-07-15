@@ -353,11 +353,20 @@ class InterceptHandler(logging.Handler):
 def setup_loguru():
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
     logger.remove()
+    
+    # Windows 编码问题修复：强制使用 UTF-8 编码
+    if platform.system() == "Windows":
+        # 重新配置 stdout 编码
+        sys.stdout.reconfigure(encoding='utf-8')
+        # 为了兼容性，也可以设置环境变量
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+    
     logger.add(
         sys.stdout,
         level="INFO",
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
         colorize=True,
+        encoding='utf-8'  # 显式设置编码
     )
 
 def get_free_port():

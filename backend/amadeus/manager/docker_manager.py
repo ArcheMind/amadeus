@@ -249,19 +249,12 @@ class DockerRunManager:
         logger.info(f"Starting container: {blue(self.name)}...")
         await self.set_state(DockerContainerState.STARTING)
         
-        # Check if container exists and is configured correctly (idempotent)
+        # Check if container exists and remove it to ensure fresh start
         container_id = await self._get_container_id_by_name()
         if container_id:
-            logger.info(f"Found existing container: {blue(self.name)}")
-            if await self._is_container_ready(container_id):
-                logger.info(f"Container {blue(self.name)} already running with correct config")
-                self._start_monitoring_tasks()
-                return
-            else:
-                logger.info(f"Container {blue(self.name)} config mismatch or not ready, recreating...")
-                # Force remove and recreate
-                await self._run_subprocess("docker", "rm", "-f", container_id)
-                await asyncio.sleep(0.5)  # Brief wait for cleanup
+            logger.info(f"Found existing container: {blue(self.name)}, removing it to use new config...")
+            await self._run_subprocess("docker", "rm", "-f", container_id)
+            await asyncio.sleep(0.5)  # Brief wait for cleanup
         
         # Create new container
         logger.info(f"Creating new container: {blue(self.name)}")

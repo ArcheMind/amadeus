@@ -6,6 +6,18 @@ from hashlib import md5
 import logging
 from loguru import logger
 import sys
+
+# Windows 编码问题修复：只在直接运行时设置（npm run dev 时由 run.js 设置）
+if platform.system() == "Windows" and not os.environ.get('PYTHONIOENCODING'):
+    # 设置环境变量，优先级最高
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ['PYTHONLEGACYWINDOWSSTDIO'] = '1'
+    
+    # 重新配置标准输出流
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(encoding='utf-8')
+    if hasattr(sys.stderr, 'reconfigure'):
+        sys.stderr.reconfigure(encoding='utf-8')
 from contextlib import asynccontextmanager
 from typing import Dict, Any, Optional
 
@@ -353,12 +365,6 @@ class InterceptHandler(logging.Handler):
 def setup_loguru():
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
     logger.remove()
-    
-    # Windows 编码问题修复：强制使用 UTF-8 编码
-    if platform.system() == "Windows":
-        # 为了兼容性，也可以设置环境变量
-        os.environ['PYTHONIOENCODING'] = 'utf-8'
-    
     logger.add(
         sys.stdout,
         level="INFO",

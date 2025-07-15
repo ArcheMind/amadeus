@@ -26,7 +26,7 @@ function runCommand(command, cwd) {
 console.log('Starting backend build process...');
 
 // Build the backend executable using PyInstaller with uv
-const buildCommand = 'uv run -p 3.12 --with-requirements backend/requirements.txt pyinstaller --name=backend --distpath dist backend/main.py';
+const buildCommand = 'uv run -p 3.12 --with-requirements backend/requirements.txt pyinstaller --name=backend --distpath dist --runtime-hook backend/pyinstaller_hook.py backend/main.py';
 runCommand(buildCommand, projectRoot);
 
 console.log('Backend build process completed.');

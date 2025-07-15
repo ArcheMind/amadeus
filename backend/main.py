@@ -13,6 +13,7 @@ import multiprocessing
 import copy
 import fastapi
 import socket
+import asyncio
 from amadeus.common import green, blue, red, yellow
 from amadeus.config_schema import CONFIG_SCHEMA, EXAMPLE_CONFIG
 from amadeus.config_router import ConfigRouter
@@ -365,6 +366,17 @@ def get_free_port():
         return s.getsockname()[1]
 
 if __name__ == "__main__":
+    # Windows平台特殊处理：设置事件循环策略
+    if platform.system() == "Windows":
+        # 在Windows上，multiprocessing的spawn模式需要特殊处理asyncio
+        # 设置事件循环策略以避免卡死
+        if sys.version_info >= (3, 8):
+            # Python 3.8+使用WindowsProactorEventLoopPolicy
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+        else:
+            # Python 3.7及以下使用WindowsSelectorEventLoopPolicy
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    
     # 设置multiprocessing使用spawn方法
     # 必须在 "if __name__ == '__main__':" 块中调用
     multiprocessing.set_start_method('spawn', force=True)

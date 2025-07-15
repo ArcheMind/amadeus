@@ -1,6 +1,7 @@
 import os
 import sys
 from loguru import logger
+from amadeus.app import main
 
 def run_amadeus_app_target(config_yaml: str, app_name: str):
     """
@@ -20,9 +21,6 @@ def run_amadeus_app_target(config_yaml: str, app_name: str):
         backtrace=True, # 记录异常回溯
         colorize=True,
     )
-    
-    # 启动amadeus app
-    from amadeus.app import main
 
     try:
         main()

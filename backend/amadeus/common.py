@@ -2,8 +2,31 @@ import csv
 import socket
 import datetime
 from io import StringIO
+import os
+import json
+import sys
 import time
 
+def load_version():
+    """加载版本号，支持开发环境和打包后环境"""
+    version_paths = [
+        # 开发环境路径
+        os.path.join(os.path.dirname(__file__), '..', '..', 'version.json'),
+        # PyInstaller资源目录
+        os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))), 'version.json'),
+    ]
+    
+    for path in version_paths:
+        try:
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    return json.load(f)['version']
+        except Exception:
+            continue
+    
+    return "1.0.0"  # 默认版本
+
+APP_VERSION = load_version()
 
 async def iter_csv(line_generator):
     async for line in line_generator:

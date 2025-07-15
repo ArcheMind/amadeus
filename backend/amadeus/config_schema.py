@@ -1,4 +1,5 @@
 import yaml
+from amadeus.common import APP_VERSION
 
 # jsonschema
 CONFIG_SCHEMA_YAML = """
@@ -203,7 +204,7 @@ about:
         readOnly: true
       version:
         title: 版本
-        default: 0.9.0
+        default: __VERSION__
         type: string
         readOnly: true
       description:
@@ -342,4 +343,5 @@ idiolects:
 
 
 EXAMPLE_CONFIG = yaml.safe_load(EXAMPLE_CONFIG_YAML)
+CONFIG_SCHEMA_YAML = CONFIG_SCHEMA_YAML.replace('__VERSION__', APP_VERSION)
 CONFIG_SCHEMA = yaml.safe_load(CONFIG_SCHEMA_YAML)

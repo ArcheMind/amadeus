@@ -1,4 +1,6 @@
 import yaml
+import sys
+import json
 import os
 import pydantic
 
@@ -37,8 +39,17 @@ class Config(pydantic.BaseModel):
     enabled_tools: list[str] = pydantic.Field(default_factory=list)
 
 
-AMADEUS_CONFIG_ENV = "AMADEUS_CONFIG"
-AMADEUS_CONFIG_STR = os.environ.get(AMADEUS_CONFIG_ENV) or "{}"
+class LazyConfig:
+    def __init__(self):
+        self._config = None
+    
+    def __getattr__(self, name):
+        if self._config is None:
+            config_str = os.environ.get("AMADEUS_CONFIG", "{}")
+            self._config = Config.model_validate(yaml.safe_load(config_str))
+        return getattr(self._config, name)
 
-data = yaml.safe_load(AMADEUS_CONFIG_STR)
-AMADEUS_CONFIG = Config.model_validate(yaml.safe_load(AMADEUS_CONFIG_STR))
+
+AMADEUS_CONFIG = LazyConfig()
+
+

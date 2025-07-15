@@ -1,7 +1,7 @@
 {
   "name": "electron-config-manager",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.0.20",
   "type": "module",
   "main": "electron/main.cjs",
   "description": "A configuration manager application built with Electron",
@@ -18,8 +18,10 @@
     "frontend:build": "vite build",
     "backend:build": "node backend/build.js",
     "electron:build": "electron-builder",
-    "build": "npm run frontend:build && npm run backend:build && npm run electron:build",
-    "lint": "eslint ."
+    "build": "npm run sync-version && npm run frontend:build && npm run backend:build && npm run electron:build",
+    "lint": "eslint .",
+    "sync-version": "node -e \"const fs=require('fs');const v=require('./version.json').version;const p=require('./package.json');p.version=v;fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\\n');\"",
+    "version:get": "node -e \"console.log(require('./version.json').version)\""
   },
   "dependencies": {
     "@headlessui/react": "^1.7.18",
@@ -73,6 +75,7 @@
     "files": [
       "dist/**/*",
       "electron/**/*",
+      "version.json",
       "!dist/backend/**/*"
     ],
     "extraResources": [

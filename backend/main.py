@@ -7,6 +7,7 @@ import logging
 from loguru import logger
 import sys
 
+
 # Windows 编码问题修复：只在直接运行时设置（npm run dev 时由 run.js 设置）
 if platform.system() == "Windows" and not os.environ.get('PYTHONIOENCODING'):
     # 设置环境变量，优先级最高
@@ -26,7 +27,7 @@ import copy
 import fastapi
 import socket
 import asyncio
-from amadeus.common import green, blue, red, yellow
+from amadeus.common import green, blue, red, yellow, APP_VERSION
 from amadeus.config_schema import CONFIG_SCHEMA, EXAMPLE_CONFIG
 from amadeus.config_router import ConfigRouter
 from amadeus.config_persistence import ConfigPersistence
@@ -64,7 +65,7 @@ async def lifespan(_: fastapi.FastAPI):
 app = fastapi.FastAPI(
     title="Amadeus Configuration API",
     description="API for managing Amadeus configuration.",
-    version="1.0.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -401,7 +402,7 @@ if __name__ == "__main__":
         port = get_free_port()
     else:
         port = int(port)
-    logger.info(f"Starting Amadeus server at http://localhost:{port}")
+    logger.info(f"Starting Amadeus v{APP_VERSION} server at http://localhost:{port}")
     uvicorn.run(
         app, host="0.0.0.0", port=port,
         access_log=False,

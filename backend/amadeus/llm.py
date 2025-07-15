@@ -21,13 +21,20 @@ from loguru import logger
 
 async def llm(
     messages,
-    base_url=AMADEUS_CONFIG.character.chat_model_provider.base_url,
-    api_key=AMADEUS_CONFIG.character.chat_model_provider.api_key,
-    model=AMADEUS_CONFIG.character.chat_model,
+    base_url=None,
+    api_key=None,
+    model=None,
     tools=None,
     continue_on_tool_call=False,
     temperature=0.7,
 ) -> AsyncIterator[str]:
+    if base_url is None:
+        base_url = AMADEUS_CONFIG.character.chat_model_provider.base_url
+    if api_key is None:
+        api_key = AMADEUS_CONFIG.character.chat_model_provider.api_key
+    if model is None:
+        model = AMADEUS_CONFIG.character.chat_model
+    
     logger.info("[开始思考]")
     tools = tools or []
     tool_specs = [t.tool_spec.model_dump(exclude_none=True) for t in tools]

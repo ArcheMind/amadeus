@@ -56,26 +56,6 @@ class DockerRunManager:
         self._monitor_tasks: Set[asyncio.Task] = set()
         self._initialized = True
         
-        loop = asyncio.get_event_loop()
-        loop.create_task(self._initial_check())
-
-    async def _initial_check(self):
-        try:
-            container_id = await self._get_container_id_by_name()
-            if container_id:
-                # Check if container is actually running
-                status = await self._get_container_state_by_id(container_id)
-                if status in ["running"]:
-                    await self.set_state(DockerContainerState.RUNNING)
-                    self._start_monitoring_tasks()
-                elif status in ["exited", "dead"]:
-                    await self.set_state(DockerContainerState.STOPPED)
-                else:
-                    # For other states, start monitoring to track changes
-                    self._start_monitoring_tasks()
-        except Exception as e:
-            logger.warning(f"Initial check failed for container {blue(self.name)}: {e}")
-
     @property
     def current_state(self) -> Union[DockerContainerState, str]:
         return self._current_state
@@ -232,7 +212,7 @@ class DockerRunManager:
         # Don't restart if already monitoring
         if self._monitor_tasks:
             return
-        
+
         # Start monitoring tasks
         task1 = asyncio.create_task(self._monitor_docker_state())
         task2 = asyncio.create_task(self._monitor_logs_for_custom_states())
@@ -263,7 +243,7 @@ class DockerRunManager:
         if not new_container_id:
             await self.set_state(DockerContainerState.ERROR)
             return
-        
+
         self._start_monitoring_tasks()
 
     async def _is_container_ready(self, container_id: str) -> bool:

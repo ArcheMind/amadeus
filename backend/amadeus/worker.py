@@ -1,7 +1,6 @@
 import os
 import sys
 from loguru import logger
-import multiprocessing
 
 def run_amadeus_app_target(config_yaml: str, app_name: str):
     """
@@ -11,8 +10,6 @@ def run_amadeus_app_target(config_yaml: str, app_name: str):
     os.environ["AMADEUS_CONFIG"] = config_yaml
     os.environ["AMADEUS_APP_NAME"] = app_name
 
-    multiprocessing.freeze_support()
-    
     # 在子进程中重新配置loguru，确保日志通过stdout发送到父进程的队列中
     logger.remove()
     logger.add(

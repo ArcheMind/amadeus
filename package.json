@@ -14,7 +14,7 @@
     "url": "https://github.com/yourusername/electron-config-manager.git"
   },
   "scripts": {
-    "dev": "concurrently \"PORT=38178 DEV_MODE=true node backend/run.js\" \"sleep 2 && vite --port 5173\"",
+    "dev": "concurrently \"cross-env PORT=38178 DEV_MODE=true node backend/run.js\" \"node delay.js 2 npx vite --port 5173\"",
     "frontend:build": "vite build",
     "backend:build": "node backend/build.js",
     "electron:build": "electron-builder",

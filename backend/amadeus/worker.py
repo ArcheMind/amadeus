@@ -1,6 +1,5 @@
 import os
 import sys
-import platform
 from loguru import logger
 
 def run_amadeus_app_target(config_yaml: str, app_name: str):
@@ -10,11 +9,6 @@ def run_amadeus_app_target(config_yaml: str, app_name: str):
     # 设置环境变量
     os.environ["AMADEUS_CONFIG"] = config_yaml
     os.environ["AMADEUS_APP_NAME"] = app_name
-    
-    # Windows 编码问题修复：强制使用 UTF-8 编码
-    if platform.system() == "Windows":
-        # 为了兼容性，也可以设置环境变量
-        os.environ['PYTHONIOENCODING'] = 'utf-8'
     
     # 在子进程中重新配置loguru，确保日志通过stdout发送到父进程的队列中
     logger.remove()

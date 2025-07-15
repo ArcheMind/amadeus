@@ -378,6 +378,7 @@ def get_free_port():
         return s.getsockname()[1]
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     # Windows平台特殊处理：设置事件循环策略
     if platform.system() == "Windows":
         # 在Windows上，multiprocessing的spawn模式需要特殊处理asyncio

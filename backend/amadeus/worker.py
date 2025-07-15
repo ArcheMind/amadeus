@@ -27,7 +27,6 @@ def run_amadeus_app_target(config_yaml: str, app_name: str):
         enqueue=True,  # 使用队列来确保进程安全
         backtrace=True, # 记录异常回溯
         colorize=True,
-        encoding='utf-8'  # 显式设置编码
     )
     
     # 启动amadeus app

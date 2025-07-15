@@ -366,7 +366,6 @@ def setup_loguru():
         level="INFO",
         format="{time:YYYY-MM-DD HH:mm:ss.SSS} | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
         colorize=True,
-        encoding='utf-8'  # 显式设置编码
     )
 
 def get_free_port():

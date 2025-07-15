@@ -14,7 +14,20 @@ const requirementsPath = path.join(backendDir, 'requirements.txt');
 function runCommand(command, cwd) {
   console.log(`Executing: ${command} in ${cwd}`);
   try {
-    execSync(command, { stdio: 'inherit', cwd });
+    // Windows 编码问题修复：设置环境变量强制使用 UTF-8
+    const env = { ...process.env };
+    if (process.platform === 'win32') {
+      env.PYTHONIOENCODING = 'utf-8';
+      env.PYTHONLEGACYWINDOWSSTDIO = '1';
+      // 设置控制台输出编码
+      try {
+        execSync('chcp 65001', { stdio: 'ignore' });
+      } catch (e) {
+        // 忽略 chcp 命令失败
+      }
+    }
+    
+    execSync(command, { stdio: 'inherit', cwd, env });
     console.log(`Successfully executed: ${command}`);
   } catch (error) {
     console.error(`Error executing command: ${command}`);

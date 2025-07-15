@@ -353,6 +353,12 @@ class InterceptHandler(logging.Handler):
 def setup_loguru():
     logging.basicConfig(handlers=[InterceptHandler()], level=0, force=True)
     logger.remove()
+    
+    # Windows 编码问题修复：强制使用 UTF-8 编码
+    if platform.system() == "Windows":
+        # 为了兼容性，也可以设置环境变量
+        os.environ['PYTHONIOENCODING'] = 'utf-8'
+    
     logger.add(
         sys.stdout,
         level="INFO",

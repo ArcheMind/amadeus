@@ -132,7 +132,6 @@ class IMObserver(BaseConfigObserver):
                     "account": app.get("account", "default"),
                     "managed": app["managed"],
                     "onebot_server": app.get("onebot_server", ""),
-                    "_connection_status": app.get("_connection_status", "disconnected"),
                 }
                 im_apps.append(im_app)
         
@@ -151,7 +150,6 @@ class IMObserver(BaseConfigObserver):
                 observer_app = observer_apps[app["name"]]
                 # Only update IM-managed fields
                 app["onebot_server"] = observer_app["onebot_server"]
-                app["_connection_status"] = observer_app["_connection_status"]
                 
         return result_config
 
@@ -226,26 +224,13 @@ class IMObserver(BaseConfigObserver):
             
             # Determine OneBot server URL
             onebot_port = ports.get(3001, 0)
-            onebot_server = f"ws://localhost:{onebot_port}" if onebot_port > 0 and running else ""
-            
-            # Determine connection status
-            connection_status = "disconnected"
-            if running:
-                if name in self.managed_ims:
-                    manager = self.managed_ims[name]
-                    if manager.current_state in ["LOGIN", "ONLINE"]:
-                        connection_status = "connected"
-                    else:
-                        connection_status = "connecting"
-                else:
-                    connection_status = "unknown"
+            onebot_server = f"ws://localhost:{onebot_port}"
             
             app_config = {
                 "name": app_name,
                 "account": account,
-                "managed": True,
+                "managed": running,
                 "onebot_server": onebot_server,
-                "_connection_status": connection_status,
             }
             current_apps.append(app_config)
         

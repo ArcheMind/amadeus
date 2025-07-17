@@ -221,53 +221,65 @@ async def app_enhancer(
 
     schema = copy.deepcopy(schema)
 
-    # Check Docker status
-    
+    # Get account type and server info
+    account_type = instance.get("type", "NapCatQQ")
     onebot_server = instance.get("onebot_server", "")
     backend_server = instance.get("_backend_server", "")
 
-    if instance.get("managed", False):
-        manager_status = "🛑已停止"
-        
-        if backend_server:
-            # Check login status using the independent function
-            logger.info(f"Enhancer: Checking login status for {blue(instance_name)}")
-            try:
-                connection_status = await check_napcat_login_status(backend_server)
-                logger.info(f"Enhancer: Login status for {blue(instance_name)}: {connection_status}")
-                
-                if connection_status == "LOGIN":
-                    manager_status = f"🟡运行中(未登录) | [点击登录]({backend_server}/webui?token=napcat)"
-                elif connection_status == "ONLINE":
-                    manager_status = f"🟢运行中(已登录) | [访问后台]({backend_server}/webui?token=napcat)"
-                elif connection_status == "starting":
-                    manager_status = f"🔵正在启动... | [访问后台]({backend_server}/webui?token=napcat)"
-                else:
-                    manager_status = f"🔵状态: {connection_status}"
-            except Exception as e:
-                logger.warning(f"Enhancer: Failed to check login status for {blue(instance_name)}: {e}")
-                manager_status = f"🔵状态检查失败 | [访问后台]({backend_server}/webui?token=napcat)"
-        schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
+    # Control field visibility based on account type
+    if account_type == "NapCatQQ":
+        # Hide onebot_server field for NapCatQQ type
         schema["schema"]["properties"]["onebot_server"]["hidden"] = True
-        # Add Docker status to managed description
-        schema["schema"]["properties"]["managed"]["description"] = manager_status
-    else:
-        docker_running, docker_status = check_docker_status()
-        # If not managed, still show Docker status and make managed readOnly if Docker is not running
-        if not docker_running:
-            schema["schema"]["properties"]["managed"]["readOnly"] = True
+        schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
         
-        # Add Docker status to managed description
-        current_description = schema["schema"]["properties"]["managed"].get("description", "")
-        if current_description:
-            schema["schema"]["properties"]["managed"]["description"] = f"{current_description} | {docker_status}"
+        # Show managed field and handle its status
+        if instance.get("managed", False):
+            manager_status = "🛑已停止"
+            
+            if backend_server:
+                # Check login status using the independent function
+                logger.info(f"Enhancer: Checking login status for {blue(instance_name)}")
+                try:
+                    connection_status = await check_napcat_login_status(backend_server)
+                    logger.info(f"Enhancer: Login status for {blue(instance_name)}: {connection_status}")
+                    
+                    if connection_status == "LOGIN":
+                        manager_status = f"🟡运行中(未登录) | [点击登录]({backend_server}/webui?token=napcat)"
+                    elif connection_status == "ONLINE":
+                        manager_status = f"🟢运行中(已登录) | [访问后台]({backend_server}/webui?token=napcat)"
+                    elif connection_status == "starting":
+                        manager_status = f"🔵正在启动... | [访问后台]({backend_server}/webui?token=napcat)"
+                    else:
+                        manager_status = f"🔵状态: {connection_status}"
+                except Exception as e:
+                    logger.warning(f"Enhancer: Failed to check login status for {blue(instance_name)}: {e}")
+                    manager_status = f"🔵状态检查失败 | [访问后台]({backend_server}/webui?token=napcat)"
+            # Add Docker status to managed description
+            schema["schema"]["properties"]["managed"]["description"] = manager_status
         else:
-            schema["schema"]["properties"]["managed"]["description"] = docker_status
-
-    if onebot_server:
-        logger.debug(f"Enhancer: Found onebot_server for app {blue(instance_name)}: {green(onebot_server)}")
+            docker_running, docker_status = check_docker_status()
+            # If not managed, still show Docker status and make managed readOnly if Docker is not running
+            if not docker_running:
+                schema["schema"]["properties"]["managed"]["readOnly"] = True
+            
+            # Add Docker status to managed description
+            current_description = schema["schema"]["properties"]["managed"].get("description", "")
+            if current_description:
+                schema["schema"]["properties"]["managed"]["description"] = f"{current_description} | {docker_status}"
+            else:
+                schema["schema"]["properties"]["managed"]["description"] = docker_status
+    else:
+        # account_type == "自定义"
+        # Hide managed field for custom type
+        schema["schema"]["properties"]["managed"]["hidden"] = True
+        schema["schema"]["properties"]["managed"]["readOnly"] = True
+        schema["schema"]["properties"]["account"]["readOnly"] = True
+        schema["schema"]["properties"]["account"]["hidden"] = True
         
-        if not instance.get("managed", False):
+        # Show onebot_server field and handle its status
+        if onebot_server:
+            logger.debug(f"Enhancer: Found onebot_server for app {blue(instance_name)}: {green(onebot_server)}")
+            
             from amadeus.executors.im import WsConnector
 
             logger.info(f"Enhancer: Connecting to Onebot server at {green(onebot_server)} for app {blue(instance_name)}")
@@ -277,6 +289,8 @@ async def app_enhancer(
             else:
                 schema["schema"]["properties"]["onebot_server"]["description"] = f"🔴连接失败"
 
+    # Handle group suggestions for both types
+    if onebot_server:
         from amadeus.executors.im import InstantMessagingClient
 
         im = InstantMessagingClient(api_base=onebot_server)
@@ -284,7 +298,7 @@ async def app_enhancer(
             logger.info(f"Enhancer: Fetching joined groups for app {blue(instance_name)} from {green(onebot_server)}")
             
             # Check real-time connection status if managed
-            if instance.get("managed", False) and backend_server:
+            if account_type == "NapCatQQ" and instance.get("managed", False) and backend_server:
                 try:
                     connection_status = await check_napcat_login_status(backend_server)
                     logger.debug(f"Enhancer: Real-time connection status for app {blue(instance_name)}: {connection_status}")
@@ -315,7 +329,7 @@ async def app_enhancer(
         logger.debug(f"Enhancer: No onebot_server found for app {blue(instance_name)}")
         
         # Show real-time status if managed
-        if instance.get("managed", False) and backend_server:
+        if account_type == "NapCatQQ" and instance.get("managed", False) and backend_server:
             try:
                 connection_status = await check_napcat_login_status(backend_server)
                 logger.debug(f"Enhancer: Instance data: managed={instance.get('managed', False)}, real-time_connection_status={connection_status}")

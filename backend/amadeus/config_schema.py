@@ -25,6 +25,7 @@ apps:
         type: string
         enum:
           - NapCatQQ
+          - 自定义
         default: NapCatQQ
       account:
         default: ""

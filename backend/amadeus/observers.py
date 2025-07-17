@@ -94,19 +94,32 @@ class BaseConfigObserver:
         3. Compare and apply changes if needed
         4. Merge updated state back
         """
+        observer_name = self.__class__.__name__
+        logger.debug(f"{observer_name}: Starting update")
+        
         # Extract observer-specific view
         desired_config = self.extract_observer_config(full_config)
+        logger.debug(f"{observer_name}: Extracted desired config: {len(desired_config.get('apps', []))} apps")
         
         # Read current state from external resources
         current_config = await self.config_from_state()
+        logger.debug(f"{observer_name}: Current state: {len(current_config.get('apps', []))} apps")
         
         # Compare and apply changes if needed
-        if not self._configs_equal(current_config, desired_config):
+        needs_update = not self._configs_equal(current_config, desired_config)
+        logger.debug(f"{observer_name}: Needs update: {needs_update}")
+        
+        if needs_update:
+            logger.info(f"{observer_name}: Applying configuration changes")
             await self.config_to_state(desired_config)
         
         # Read final state and merge back
         final_config = await self.config_from_state()
-        return self.merge_observer_config(full_config, final_config)
+        logger.debug(f"{observer_name}: Final state: {len(final_config.get('apps', []))} apps")
+        
+        result = self.merge_observer_config(full_config, final_config)
+        logger.debug(f"{observer_name}: Update completed")
+        return result
     
     def _configs_equal(self, config1: Dict[str, Any], config2: Dict[str, Any]) -> bool:
         """Compare two configurations for equality."""
@@ -282,6 +295,7 @@ class IMObserver(BaseConfigObserver):
                 observer_app = observer_apps[app["name"]]
                 # Only update IM-managed fields
                 app["onebot_server"] = observer_app["onebot_server"]
+                app["_backend_server"] = observer_app["_backend_server"]
                 
         return result_config
 
@@ -348,17 +362,22 @@ class IMObserver(BaseConfigObserver):
             # Get app name from labels, or derive from container name
             app_name = labels.get("amadeus.app.name", name)
             
-            # Always set onebot_server for running containers (status will be checked in main.py)
+            # Set onebot_server and backend_server for running containers
             onebot_server = ""
+            backend_server = ""
+            
             if running:
                 onebot_port = ports.get(3001, 0)
                 onebot_server = f"ws://localhost:{onebot_port}"
+                backend_port = ports.get(6099, 0)
+                backend_server = f"http://localhost:{backend_port}" if backend_port else ""
             
             app_config = {
                 "name": app_name,
                 "account": account,
                 "managed": running,
                 "onebot_server": onebot_server,
+                "_backend_server": backend_server,
             }
             current_apps.append(app_config)
         

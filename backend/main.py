@@ -91,7 +91,14 @@ config_persistence = ConfigPersistence(EXAMPLE_CONFIG)
 
 
 async def save_config_data(config_data: dict):
-    logger.info(f"{yellow('--- User triggered configuration save ---')}")
+    import traceback
+    import asyncio
+    
+    # Get call stack information
+    stack = traceback.extract_stack()
+    caller_info = f"{stack[-2].filename}:{stack[-2].lineno} in {stack[-2].name}"
+    logger.info(f"{yellow('--- User triggered configuration save ---')} (called from: {caller_info})")
+    
     original_config = copy.deepcopy(config_data)
     modified_config_data = await WorkerManager.apply_config(config_data)
     config_persistence.save(modified_config_data)
@@ -137,6 +144,56 @@ def check_docker_status():
         return False, f"🔴Docker检测失败: {str(e)}"
 
 
+async def check_napcat_login_status(backend_server: str) -> str:
+    """
+    Check NapCat login status through HTTP API.
+    Returns "ONLINE", "LOGIN", "starting", or "error"
+    """
+    if not backend_server:
+        return "error"
+    
+    import aiohttp
+    
+    try:
+        timeout = aiohttp.ClientTimeout(total=5.0)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            # Get auth token
+            auth_payload = {"hash": "fab552ce31e45b51288bb374b7e08d720f1d612e20fb7361246139c1e476f0b0"}
+            async with session.post(f"{backend_server}/api/auth/login", json=auth_payload) as response:
+                if response.status != 200:
+                    return "starting"
+                
+                data = await response.json()
+                if data.get("code") != 0:
+                    return "starting"
+                
+                token = data.get("data", {}).get("Credential")
+                if not token:
+                    return "starting"
+            
+            # Check login status
+            headers = {"Authorization": f"Bearer {token}"}
+            async with session.post(f"{backend_server}/api/QQLogin/CheckLoginStatus", headers=headers) as response:
+                if response.status != 200:
+                    return "starting"
+                
+                data = await response.json()
+                if data.get("code") != 0:
+                    return "starting"
+                
+                login_data = data.get("data", {})
+                if login_data.get("isLogin", False):
+                    return "ONLINE"
+                elif login_data.get("qrcodeurl"):
+                    return "LOGIN"
+                else:
+                    return "starting"
+                    
+    except Exception as e:
+        logger.debug(f"Exception checking login status for {backend_server}: {e}")
+        return "error"
+
+
 # Initialize the config router with schema and data getter/setter
 config_router = ConfigRouter(
     config_schema=CONFIG_SCHEMA,
@@ -167,47 +224,29 @@ async def app_enhancer(
     # Check Docker status
     
     onebot_server = instance.get("onebot_server", "")
-    
-    # Initialize variables for later use
-    im_manager = None
-    im_observer = None
+    backend_server = instance.get("_backend_server", "")
 
     if instance.get("managed", False):
-        im_name = f"im-{md5(instance_name.encode()).hexdigest()[:10]}-{instance.get('account', 'default')}"
-        for observer in WorkerManager.observers:
-            if isinstance(observer, IMObserver):
-                im_manager = observer.managed_ims.get(im_name)
-                im_observer = observer
-                break
-        
         manager_status = "🛑已停止"
         
-        if im_manager:
-            backend_port = im_manager.ports.get(6099)
-            if 3001 in im_manager.ports:
-                send_port = im_manager.ports.get(3001)
-                onebot_server = f"ws://localhost:{send_port}"
-            
-            if not im_manager.running:
-                manager_status = "🛑已停止"
-            else:
-                # Real-time status check
-                logger.info(f"Enhancer: Checking real-time status for {blue(instance_name)}")
-                try:
-                    connection_status = await im_observer._get_container_status(im_manager)
-                    logger.info(f"Enhancer: Real-time status for {blue(instance_name)}: {connection_status}")
-                    
-                    if connection_status == "LOGIN":
-                        manager_status = f"🟡运行中(未登录) | [点击登录](http://localhost:{backend_port}/webui?token=napcat)"
-                    elif connection_status == "ONLINE":
-                        manager_status = f"🟢运行中(已登录) | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
-                    elif connection_status == "starting":
-                        manager_status = f"🔵正在启动... | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
-                    else:
-                        manager_status = f"🔵状态: {connection_status}"
-                except Exception as e:
-                    logger.warning(f"Enhancer: Failed to check real-time status for {blue(instance_name)}: {e}")
-                    manager_status = f"🔵状态检查失败 | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
+        if backend_server:
+            # Check login status using the independent function
+            logger.info(f"Enhancer: Checking login status for {blue(instance_name)}")
+            try:
+                connection_status = await check_napcat_login_status(backend_server)
+                logger.info(f"Enhancer: Login status for {blue(instance_name)}: {connection_status}")
+                
+                if connection_status == "LOGIN":
+                    manager_status = f"🟡运行中(未登录) | [点击登录]({backend_server}/webui?token=napcat)"
+                elif connection_status == "ONLINE":
+                    manager_status = f"🟢运行中(已登录) | [访问后台]({backend_server}/webui?token=napcat)"
+                elif connection_status == "starting":
+                    manager_status = f"🔵正在启动... | [访问后台]({backend_server}/webui?token=napcat)"
+                else:
+                    manager_status = f"🔵状态: {connection_status}"
+            except Exception as e:
+                logger.warning(f"Enhancer: Failed to check login status for {blue(instance_name)}: {e}")
+                manager_status = f"🔵状态检查失败 | [访问后台]({backend_server}/webui?token=napcat)"
         schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
         schema["schema"]["properties"]["onebot_server"]["hidden"] = True
         # Add Docker status to managed description
@@ -245,9 +284,9 @@ async def app_enhancer(
             logger.info(f"Enhancer: Fetching joined groups for app {blue(instance_name)} from {green(onebot_server)}")
             
             # Check real-time connection status if managed
-            if instance.get("managed", False) and im_observer and im_manager:
+            if instance.get("managed", False) and backend_server:
                 try:
-                    connection_status = await im_observer._get_container_status(im_manager)
+                    connection_status = await check_napcat_login_status(backend_server)
                     logger.debug(f"Enhancer: Real-time connection status for app {blue(instance_name)}: {connection_status}")
                     
                     if connection_status != "ONLINE":
@@ -276,9 +315,9 @@ async def app_enhancer(
         logger.debug(f"Enhancer: No onebot_server found for app {blue(instance_name)}")
         
         # Show real-time status if managed
-        if instance.get("managed", False) and im_observer and im_manager:
+        if instance.get("managed", False) and backend_server:
             try:
-                connection_status = await im_observer._get_container_status(im_manager)
+                connection_status = await check_napcat_login_status(backend_server)
                 logger.debug(f"Enhancer: Instance data: managed={instance.get('managed', False)}, real-time_connection_status={connection_status}")
             except Exception as e:
                 logger.debug(f"Enhancer: Instance data: managed={instance.get('managed', False)}, status_check_failed={e}")
@@ -389,8 +428,15 @@ class WorkerManager:
     async def apply_config(cls, config_data):
         logger.info(f"{yellow('--- Applying configuration ---')}")
         
-        for observer in cls.observers:
+        for i, observer in enumerate(cls.observers):
+            observer_name = observer.__class__.__name__
+            logger.debug(f"Processing observer {i+1}/{len(cls.observers)}: {observer_name}")
+            
+            config_data_before = len(config_data.get("apps", []))
             config_data = await observer.update(config_data)
+            config_data_after = len(config_data.get("apps", []))
+            
+            logger.debug(f"{observer_name} processed: {config_data_before} -> {config_data_after} apps")
 
         logger.info(f"{yellow('--- Configuration application finished ---')}")
         return config_data

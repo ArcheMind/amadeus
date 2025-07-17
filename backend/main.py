@@ -394,14 +394,34 @@ async def character_enhancer(
     class_name: str,
     instance_name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    providers = config_data.get("model_providers", [])
-    all_models = []
-    for provider in providers:
-        all_models.extend(provider.get("models", []))
+    if not instance_name:
+        return schema
     
-    if all_models:
-        schema["schema"]["properties"]["chat_model"]["suggestions"] = all_models
-        schema["schema"]["properties"]["vision_model"]["suggestions"] = all_models
+    # Get the current character instance
+    instance = find_item(config_data, class_name, instance_name)
+    if not instance:
+        return schema
+    
+    # Get the selected model providers
+    chat_model_provider = instance.get("chat_model_provider", "")
+    vision_model_provider = instance.get("vision_model_provider", "")
+    
+    # Get models for chat_model field
+    if chat_model_provider:
+        chat_provider = find_item(config_data, "model_providers", chat_model_provider)
+        if chat_provider:
+            chat_models = chat_provider.get("models", [])
+            if chat_models:
+                schema["schema"]["properties"]["chat_model"]["suggestions"] = chat_models
+    
+    # Get models for vision_model field
+    if vision_model_provider:
+        vision_provider = find_item(config_data, "model_providers", vision_model_provider)
+        if vision_provider:
+            vision_models = vision_provider.get("models", [])
+            if vision_models:
+                schema["schema"]["properties"]["vision_model"]["suggestions"] = vision_models
+    
     return schema
 
 config_router.register_schema_enhancer(

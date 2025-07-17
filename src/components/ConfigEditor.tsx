@@ -2,12 +2,13 @@ import React, { useEffect, useState } from 'react';
 import { useStore } from '../store';
 import EmptyState from './EmptyState';
 import { Button } from './ui/Button';
-import { Trash2, Copy, Loader2 } from 'lucide-react';
+import { Trash2, Copy, Loader2, RefreshCw } from 'lucide-react';
 import toast from 'react-hot-toast';
 import FormRenderer from './form/FormRenderer';
 import { Dialog } from './ui/Dialog';
 import { Input } from './ui/Input';
 import { useTranslation } from 'react-i18next';
+import { cn } from '../lib/utils';
 
 const ConfigEditor: React.FC = () => {
   const { t } = useTranslation();
@@ -21,6 +22,8 @@ const ConfigEditor: React.FC = () => {
     selectClass,
     selectInstance,
     loading,
+    refreshClasses,
+    refreshInstances,
   } = useStore();
 
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
@@ -35,6 +38,7 @@ const ConfigEditor: React.FC = () => {
   const [isCloneDialogOpen, setIsCloneDialogOpen] = useState(false);
   const [cloneNewName, setCloneNewName] = useState('');
   const [cloneError, setCloneError] = useState<string | null>(null);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
   if (!selectedClass) {
     return (
@@ -158,6 +162,24 @@ const ConfigEditor: React.FC = () => {
     setIsCloneDialogOpen(true);
   };
 
+  const handleRefreshClick = async () => {
+    if (!selectedClass) return;
+    
+    try {
+      setIsRefreshing(true);
+      await refreshClasses();
+      if (!configDef?.isSingleton) {
+        await refreshInstances(selectedClass);
+      }
+      toast.success(t('common.refreshSuccess'));
+    } catch (error) {
+      console.error('Refresh failed:', error);
+      toast.error(t('common.refreshFailed'));
+    } finally {
+      setIsRefreshing(false);
+    }
+  };
+
   const handleConfirmClone = async () => {
     if (!selectedClass || !cloneNewName.trim()) {
       setCloneError(t('clone.nameRequired'));
@@ -242,29 +264,44 @@ const ConfigEditor: React.FC = () => {
             )}
           </div>
           
-          {!configDef.isSingleton && selectedInstance && (
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleCloneClick}
-                className="flex items-center gap-2 opacity-80 hover:opacity-100"
-              >
-                <Copy className="h-4 w-4" />
-                <span>{t('common.clone')}</span>
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleDeleteClick}
-                disabled={isDeleting}
-                className="flex items-center gap-2 text-destructive hover:text-destructive-foreground hover:bg-destructive opacity-80 hover:opacity-100"
-              >
-                <Trash2 className="h-4 w-4" />
-                <span>{isDeleting ? t('common.deleting') : t('common.delete')}</span>
-              </Button>
-            </div>
-          )}
+          <div className="flex items-center gap-2">
+            {/* 刷新按钮 - 对所有配置都显示 */}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleRefreshClick}
+              disabled={isRefreshing}
+              className="flex items-center gap-2 opacity-80 hover:opacity-100"
+            >
+              <RefreshCw className={cn("h-4 w-4", isRefreshing && "animate-spin")} />
+              <span>{isRefreshing ? t('common.refreshing') : t('common.refresh')}</span>
+            </Button>
+            
+            {/* 克隆和删除按钮 - 仅对非singleton且有选中实例的配置显示 */}
+            {!configDef.isSingleton && selectedInstance && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCloneClick}
+                  className="flex items-center gap-2 opacity-80 hover:opacity-100"
+                >
+                  <Copy className="h-4 w-4" />
+                  <span>{t('common.clone')}</span>
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleDeleteClick}
+                  disabled={isDeleting}
+                  className="flex items-center gap-2 text-destructive hover:text-destructive-foreground hover:bg-destructive opacity-80 hover:opacity-100"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  <span>{isDeleting ? t('common.deleting') : t('common.delete')}</span>
+                </Button>
+              </>
+            )}
+          </div>
         </div>
         
         <div className="p-6">

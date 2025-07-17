@@ -173,12 +173,52 @@ async def _main():
         if daemon not in _TASKS:
             logger.info(f"Starting daemon: {green(daemon.__name__)}")
             _TASKS[daemon] = asyncio.create_task(daemon())
+    
     uri = AMADEUS_CONFIG.onebot_server
-    logger.info(f"Connecting to IM client at {green(uri)}")
+    logger.info(f"Starting IM client connection to {green(uri)}")
     helper = WsConnector(uri)
     helper.register_event_handler(message_handler)
-    await helper.start()
-    await helper.join()
+    
+    # Start connection in background with retry logic
+    async def connect_with_retry():
+        retry_count = 0
+        last_log_time = 0
+        
+        while True:
+            try:
+                current_time = asyncio.get_event_loop().time()
+                
+                # Log attempt only every 30 seconds to avoid spam
+                if current_time - last_log_time >= 30:
+                    logger.info(f"Attempting to connect to IM client at {green(uri)} (attempt {retry_count + 1})")
+                    last_log_time = current_time
+                
+                success = await helper.start()
+                if success:
+                    logger.info(f"Successfully connected to IM client at {green(uri)} after {retry_count + 1} attempts")
+                    await helper.join()
+                    break
+                else:
+                    retry_count += 1
+                    wait_time = min(15, 5 + retry_count * 2)  # Start at 5s, increase by 2s each time, cap at 15s
+                    await asyncio.sleep(wait_time)
+            except Exception as e:
+                retry_count += 1
+                current_time = asyncio.get_event_loop().time()
+                
+                # Log error only every 60 seconds to avoid spam
+                if current_time - last_log_time >= 60:
+                    logger.error(f"Error connecting to IM client at {green(uri)}: {e}")
+                    last_log_time = current_time
+                
+                wait_time = min(15, 5 + retry_count * 2)  # Start at 5s, increase by 2s each time, cap at 15s
+                await asyncio.sleep(wait_time)
+    
+    # Start the connection task
+    connection_task = asyncio.create_task(connect_with_retry())
+    
+    # Wait for the connection task to complete
+    await connection_task
     
 
 def main():

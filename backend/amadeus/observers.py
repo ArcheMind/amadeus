@@ -268,15 +268,17 @@ class IMObserver(BaseConfigObserver):
         return status if status is not None else "starting"
 
     def extract_observer_config(self, full_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract IM-specific view: only managed=true apps with required fields."""
+        """Extract IM-specific view: only enable=true and type=NapCatQQ apps with required fields."""
         im_apps = []
         for app in full_config.get("apps", []):
-            if app.get("managed", False):
+            if app.get("enable", False) and app.get("type", "NapCatQQ") == "NapCatQQ":
                 im_app = {
                     "name": app["name"],
                     "account": app.get("account", "default"),
-                    "managed": app["managed"],
+                    "enable": app["enable"],
+                    "type": app["type"],
                     "onebot_server": app.get("onebot_server", ""),
+                    "backend_server": app.get("backend_server", ""),
                 }
                 im_apps.append(im_app)
         
@@ -295,7 +297,7 @@ class IMObserver(BaseConfigObserver):
                 observer_app = observer_apps[app["name"]]
                 # Only update IM-managed fields
                 app["onebot_server"] = observer_app["onebot_server"]
-                app["_backend_server"] = observer_app["_backend_server"]
+                app["backend_server"] = observer_app["backend_server"]
                 
         return result_config
 
@@ -306,7 +308,7 @@ class IMObserver(BaseConfigObserver):
         # Build target state map
         target_ims = {}
         for app_config in config.get("apps", []):
-            if app_config.get("managed", False):
+            if app_config.get("enable", False) and app_config.get("type", "NapCatQQ") == "NapCatQQ":
                 name_hash = md5(app_config["name"].encode()).hexdigest()[:10]
                 name = f"im-{name_hash}-{app_config.get('account', 'default')}"
                 target_ims[name] = app_config
@@ -375,9 +377,10 @@ class IMObserver(BaseConfigObserver):
             app_config = {
                 "name": app_name,
                 "account": account,
-                "managed": running,
+                "enable": running,
+                "type": "NapCatQQ",
                 "onebot_server": onebot_server,
-                "_backend_server": backend_server,
+                "backend_server": backend_server,
             }
             current_apps.append(app_config)
         
@@ -494,10 +497,12 @@ class AmadeusObserver(BaseConfigObserver):
                 }
                 
                 await manager.start()
-                await asyncio.sleep(3)
-
+                await asyncio.sleep(3)  # Wait to detect early failures
+                
+                # Check if process is still running after initial period
                 if manager.current_state == MultiprocessState.RUNNING:
                     self.amadeus_workers[worker_key] = manager
+                    logger.info(f"Amadeus worker {blue(worker_key)} started successfully")
                 else:
                     # Keep failed manager for state synchronization
                     self.amadeus_workers[worker_key] = manager

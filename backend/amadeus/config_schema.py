@@ -32,11 +32,13 @@ apps:
         minLength: 1
         title: 账号
         type: string
-      managed:
-        default: false
-        title: 托管客户端
-        type: boolean
-        description: 让 Amadeus 帮你启动和管理账号客户端。需要安装 Docker
+      backend_server:
+        title: 账号后台
+        type: string
+        default: ""
+        format: uri
+        readOnly: true
+        hidden: true
       onebot_server:
         title: Onebot接口地址
         type: string
@@ -302,7 +304,9 @@ apps:
 - enable: false
   name: 思思的QQ
   character: 思思
-  protocol: onebot
+  type: NapCatQQ
+  account: ""
+  backend_server: ""
   enabled_groups:
   - '119851258'
   enabled_tools:

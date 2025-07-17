@@ -221,18 +221,22 @@ async def app_enhancer(
     onebot_server = instance.get("onebot_server", "")
     backend_server = instance.get("backend_server", "")
 
+    if instance.get("enable", False):
+        schema["schema"]["properties"]["account"]["readOnly"] = True
+        schema["schema"]["properties"]["type"]["readOnly"] = True
+        schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
+
     # Control field visibility based on account type
     if account_type == "NapCatQQ":
+        # Hide onebot_server field for NapCatQQ type
+        schema["schema"]["properties"]["onebot_server"]["hidden"] = True
+
         docker_running, docker_status = check_docker_status()
         if docker_running:
             schema["schema"]["properties"]["type"]["description"] = f"{docker_status}"
         else:
             schema["schema"]["properties"]["type"]["description"] = f"{docker_status} | 请先启动 Docker"
             schema["schema"]["properties"]["enable"]["readOnly"] = True
-        
-        # Hide onebot_server field for NapCatQQ type
-        schema["schema"]["properties"]["onebot_server"]["hidden"] = True
-        schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
 
         # Show backend_server field and handle its status
         if backend_server and instance.get("enable", False):
@@ -262,8 +266,8 @@ async def app_enhancer(
     else:
         # account_type == "自定义"
         # Hide backend_server field for custom type
-        schema["schema"]["properties"]["account"]["readOnly"] = True
         schema["schema"]["properties"]["account"]["hidden"] = True
+        schema["schema"]["properties"]["onebot_server"]["hidden"] = False
         
         # Show onebot_server field and handle its status
         if onebot_server:

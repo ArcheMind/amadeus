@@ -43,6 +43,7 @@ apps:
         title: Onebot接口地址
         type: string
         format: uri
+        hidden: true
       character:
         $dynamicEnum:
           source: characters

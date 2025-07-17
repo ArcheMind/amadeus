@@ -63,10 +63,10 @@ class WsConnector:
             port = int(host_port_match.group(2))
             logger.debug(f"Checking if port {port} is open on {host}")
             
-            # Quick TCP connection check
+            # Quick TCP connection check with reduced timeout
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
+                sock.settimeout(1)  # Reduced from 2 seconds to 1 second
                 result = sock.connect_ex((host, port))
                 sock.close()
             except Exception as e:
@@ -77,7 +77,11 @@ class WsConnector:
                 port = host_port_match.group(2) if host_port_match else "unknown"
                 logger.debug(f"Trying to establish WebSocket connection to port {port}")
                 
-                self._conn = await websockets.connect(self.uri)
+                # Add timeout to WebSocket connection
+                self._conn = await asyncio.wait_for(
+                    websockets.connect(self.uri), 
+                    timeout=2.0  # 2 seconds timeout for WebSocket connection
+                )
                 logger.info(
                     f"Successfully connected to WebSocket server at {green(self.uri)}"
                 )
@@ -87,6 +91,7 @@ class WsConnector:
         except (
             websockets.exceptions.WebSocketException,
             ConnectionRefusedError,
+            asyncio.TimeoutError,  # Added timeout exception
         ) as e:
             if host_port_match:
                 port = host_port_match.group(2)
@@ -172,7 +177,7 @@ class InstantMessagingClient:
                 logger.trace(f"Response received for echo {blue(echo)}")
 
     async def _send_request(
-        self, action: str, params: Dict[str, Any], timeout: int = 10
+        self, action: str, params: Dict[str, Any], timeout: int = 3
     ) -> Dict[str, Any]:
         await self._ensure_listener_running()
         echo = str(uuid.uuid4())

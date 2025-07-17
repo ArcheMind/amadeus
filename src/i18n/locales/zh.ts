@@ -1,6 +1,6 @@
 export default {
   common: {
-    welcome: '欢迎使用配置管理器',
+    welcome: '欢迎',
     selectConfig: '从侧边栏选择一个配置开始',
     loading: '加载配置中',
     loadingDesc: '请稍候，正在加载您的配置',

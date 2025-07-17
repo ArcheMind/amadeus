@@ -1,6 +1,6 @@
 export default {
   common: {
-    welcome: 'Welcome to Config Manager',
+    welcome: 'Welcome',
     selectConfig: 'Select a configuration from the sidebar to get started',
     loading: 'Loading Configuration',
     loadingDesc: 'Please wait while we load your configuration',

@@ -1,10 +1,10 @@
 {
-  "name": "electron-config-manager",
+  "name": "amadeus",
   "private": true,
-  "version": "0.0.20",
+  "version": "0.0.24",
   "type": "module",
   "main": "electron/main.cjs",
-  "description": "A configuration manager application built with Electron",
+  "description": "开源聊天机器人框架",
   "author": {
     "name": "Your Name",
     "email": "your.email@example.com"
@@ -18,9 +18,11 @@
     "frontend:build": "vite build",
     "backend:build": "node backend/build.js",
     "electron:build": "electron-builder",
-    "build": "npm run sync-version && npm run frontend:build && npm run backend:build && npm run electron:build",
+    "build": "npm run sync-version && npm run sync-app-info && npm run sync-html-title && npm run frontend:build && npm run backend:build && npm run electron:build",
     "lint": "eslint .",
     "sync-version": "node -e \"const fs=require('fs');const v=require('./version.json').version;const p=require('./package.json');p.version=v;fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\\n');\"",
+    "sync-app-info": "node -e \"const fs=require('fs');const vi=require('./version.json');const p=require('./package.json');const eb=require('./electron-builder.json');p.name=vi.name.toLowerCase().replace(/[^a-z0-9]/g,'-');p.description=vi.description;p.build.productName=vi.name;p.build.appId='com.'+vi.name.toLowerCase().replace(/[^a-z0-9]/g,'')+'.app';eb.appId='com.'+vi.name.toLowerCase().replace(/[^a-z0-9]/g,'')+'.app';eb.productName=vi.name;fs.writeFileSync('./package.json',JSON.stringify(p,null,2)+'\\n');fs.writeFileSync('./electron-builder.json',JSON.stringify(eb,null,2)+'\\n');\"",
+    "sync-html-title": "node -e \"const fs=require('fs');const vi=require('./version.json');let html=fs.readFileSync('index.html','utf8');html=html.replace(/<title>.*?<\\/title>/,'<title>'+vi.name+'</title>');fs.writeFileSync('index.html',html);\"",
     "version:get": "node -e \"console.log(require('./version.json').version)\""
   },
   "dependencies": {
@@ -69,8 +71,8 @@
     "wait-on": "^8.0.3"
   },
   "build": {
-    "appId": "com.electron.configmanager",
-    "productName": "Config Manager",
+    "appId": "com.amadeus.app",
+    "productName": "Amadeus",
     "directories": {
       "output": "dist_electron"
     },

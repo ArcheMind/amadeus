@@ -1,6 +1,6 @@
 {
-  "appId": "com.amadeus.config-manager",
-  "productName": "Config Manager",
+  "appId": "com.amadeus.app",
+  "productName": "Amadeus",
   "directories": {
     "output": "dist_electron"
   },
@@ -12,22 +12,33 @@
     {
       "from": "dist/backend",
       "to": "backend",
-      "filter": ["**/*"]
+      "filter": [
+        "**/*"
+      ]
     }
   ],
   "mac": {
     "category": "public.app-category.developer-tools",
-    "target": ["dmg", "zip"],
+    "target": [
+      "dmg",
+      "zip"
+    ],
     "hardenedRuntime": true,
     "gatekeeperAssess": false,
     "entitlements": "electron/entitlements.mac.plist",
     "entitlementsInherit": "electron/entitlements.mac.plist"
   },
   "win": {
-    "target": ["nsis", "portable"]
+    "target": [
+      "nsis",
+      "portable"
+    ]
   },
   "linux": {
-    "target": ["AppImage", "deb"],
+    "target": [
+      "AppImage",
+      "deb"
+    ],
     "category": "Development"
   }
-} 
+}

@@ -52,8 +52,31 @@ class WsConnector:
 
     async def start(self):
         self._is_running = True
+        logger.debug(f"Attempting to connect to WebSocket at {green(self.uri)}")
+        
+        # Extract host and port for pre-connection check
+        import re
+        import socket
+        host_port_match = re.search(r'://([^:/]+):(\d+)', self.uri)
+        if host_port_match:
+            host = host_port_match.group(1)
+            port = int(host_port_match.group(2))
+            logger.debug(f"Checking if port {port} is open on {host}")
+            
+            # Quick TCP connection check
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(2)
+                result = sock.connect_ex((host, port))
+                sock.close()
+            except Exception as e:
+                logger.warning(f"Failed to check port {port}: {e}")
+        
         try:
             async with self._connect_lock:
+                port = host_port_match.group(2) if host_port_match else "unknown"
+                logger.debug(f"Trying to establish WebSocket connection to port {port}")
+                
                 self._conn = await websockets.connect(self.uri)
                 logger.info(
                     f"Successfully connected to WebSocket server at {green(self.uri)}"
@@ -65,9 +88,8 @@ class WsConnector:
             websockets.exceptions.WebSocketException,
             ConnectionRefusedError,
         ) as e:
-            logger.error(
-                f"Failed to connect to WebSocket at {red(self.uri)}: {e}"
-            )
+            if host_port_match:
+                port = host_port_match.group(2)
             self._conn = None
         except Exception as e:
             logger.error(f"An unexpected error occurred in WsConnector: {e}")
@@ -132,7 +154,11 @@ class InstantMessagingClient:
 
     async def _ensure_listener_running(self):
         if not self._is_listener_running:
-            await self._ws_connector.start()
+            logger.debug(f"Starting WebSocket connection to {green(self.api_base)}")
+            success = await self._ws_connector.start()
+            if not success:
+                raise RuntimeError(f"WebSocket connection to {self.api_base} is not established.")
+            
             self._ws_connector.register_event_handler(self._response_handler)
             self._is_listener_running = True
             logger.info(f"IM client listener started for {green(self.api_base)}")
@@ -189,10 +215,25 @@ class InstantMessagingClient:
             return str(group_id)
 
     async def get_joined_groups(self):
-        response = await self._send_request(action="get_group_list", params={})
-        if not (response and response.get("status") == "ok"):
-            return []
-        return response.get("data", [])
+        logger.debug(f"Starting to get joined groups from {green(self.api_base)}")
+        
+        # Check if WebSocket connection is ready
+        if not self._is_listener_running:
+            logger.debug(f"WebSocket listener not running, attempting to start for {green(self.api_base)}")
+        
+        try:
+            response = await self._send_request(action="get_group_list", params={})
+            logger.debug(f"Received response from {green(self.api_base)}: status={response.get('status') if response else 'None'}")
+            
+            if not (response and response.get("status") == "ok"):
+                logger.warning(f"Failed to get groups from {green(self.api_base)}: {response}")
+                return []
+            
+            groups = response.get("data", [])
+            logger.debug(f"Successfully got {len(groups)} groups from {green(self.api_base)}")
+            return groups
+        except Exception as e:
+            raise
 
     @async_lru_cache(maxsize=1)
     async def get_login_info(self):

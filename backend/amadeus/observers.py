@@ -2,6 +2,7 @@ import asyncio
 import copy
 from hashlib import md5
 from typing import Dict, Any, Protocol, List, Optional
+import aiohttp
 
 import yaml
 from loguru import logger
@@ -121,6 +122,137 @@ class IMObserver(BaseConfigObserver):
     
     def __init__(self):
         self.managed_ims: Dict[str, DockerRunManager] = {}
+        self._http_session: Optional[aiohttp.ClientSession] = None
+
+    async def _ensure_session(self):
+        """Ensure HTTP session is available."""
+        if self._http_session is None or self._http_session.closed:
+            timeout = aiohttp.ClientTimeout(total=10.0)
+            self._http_session = aiohttp.ClientSession(timeout=timeout)
+
+    async def _check_api_and_login_status(self, manager: DockerRunManager) -> Optional[str]:
+        """Check API availability and return login status. Returns None if API not ready."""
+        if not manager.running:
+            logger.debug(f"Container {manager.name} is not running")
+            return None
+        
+        webui_port = manager.ports.get(6099)
+        if not webui_port:
+            logger.debug(f"Webui port not available for {manager.name}")
+            return None
+        
+        try:
+            await self._ensure_session()
+            base_url = f"http://localhost:{webui_port}"
+            
+            # Get auth token
+            auth_payload = {"hash": "fab552ce31e45b51288bb374b7e08d720f1d612e20fb7361246139c1e476f0b0"}
+            async with self._http_session.post(f"{base_url}/api/auth/login", json=auth_payload) as response:
+                if response.status != 200:
+                    logger.debug(f"Auth API failed for {manager.name}: HTTP {response.status}")
+                    return None
+                
+                data = await response.json()
+                if data.get("code") != 0:
+                    logger.debug(f"Auth API failed for {manager.name}: code {data.get('code')}")
+                    return None
+                
+                token = data.get("data", {}).get("Credential")
+                if not token:
+                    logger.debug(f"No token received for {manager.name}")
+                    return None
+            
+            # Check login status
+            headers = {"Authorization": f"Bearer {token}"}
+            async with self._http_session.post(f"{base_url}/api/QQLogin/CheckLoginStatus", headers=headers) as response:
+                if response.status != 200:
+                    logger.debug(f"Login status API failed for {manager.name}: HTTP {response.status}")
+                    return None
+                
+                data = await response.json()
+                if data.get("code") != 0:
+                    logger.debug(f"Login status API failed for {manager.name}: code {data.get('code')}")
+                    return None
+                
+                login_data = data.get("data", {})
+                if login_data.get("isLogin", False):
+                    logger.debug(f"Container {manager.name} is logged in")
+                    return "ONLINE"
+                elif login_data.get("qrcodeurl"):
+                    logger.debug(f"Container {manager.name} has QR code for login")
+                    return "LOGIN"
+                else:
+                    logger.debug(f"Container {manager.name} login status unclear")
+                    return "starting"
+                    
+        except Exception as e:
+            logger.debug(f"Exception checking API for {manager.name}: {e}")
+            return None
+
+    async def _wait_for_api_ready(self, manager: DockerRunManager, im_key: str, timeout: int = 60) -> None:
+        """Wait until the container's login API is ready and stable."""
+        logger.info(f"Waiting for API to be ready for {blue(im_key)}...")
+        
+        start_time = asyncio.get_event_loop().time()
+        last_progress_log = start_time
+        consecutive_successes = 0
+        required_successes = 3  # Require 3 consecutive successful checks
+        
+        while True:
+            current_time = asyncio.get_event_loop().time()
+            if current_time - start_time > timeout:
+                logger.error(f"Timeout waiting for API to be ready for {blue(im_key)} after {timeout}s")
+                return
+            
+            # Log progress every 10 seconds
+            if current_time - last_progress_log >= 10:
+                elapsed = current_time - start_time
+                logger.info(f"Still waiting for API for {blue(im_key)} ({elapsed:.1f}s elapsed)")
+                last_progress_log = current_time
+            
+            # Check if container is still running
+            if not manager.running:
+                logger.error(f"Container {blue(im_key)} stopped while waiting for API")
+                return
+            
+            # Try to check API and login status
+            status = await self._check_api_and_login_status(manager)
+            if status is not None:
+                consecutive_successes += 1
+                logger.debug(f"API check success {consecutive_successes}/{required_successes} for {blue(im_key)} (status: {status})")
+                
+                if consecutive_successes >= required_successes:
+                    # API is stable and ready!
+                    elapsed = current_time - start_time
+                    logger.info(f"API ready and stable for {blue(im_key)} after {elapsed:.1f}s (status: {status})")
+                    
+                    # Log the current login status for information
+                    if status == "ONLINE":
+                        logger.info(f"Container {blue(im_key)} is already logged in")
+                    else:
+                        logger.info(f"Container {blue(im_key)} is ready for login")
+                    return
+            else:
+                # Reset counter on failure
+                if consecutive_successes > 0:
+                    logger.debug(f"API check failed for {blue(im_key)}, resetting success counter")
+                consecutive_successes = 0
+            
+            # Not ready yet, wait and retry
+            await asyncio.sleep(1)
+
+    async def _get_container_status(self, manager: DockerRunManager) -> str:
+        """Get container status via HTTP API."""
+        if not manager.running:
+            return "stopped"
+        
+        # Use the shared API check method
+        status = await self._check_api_and_login_status(manager)
+        if status is None:
+            logger.debug(f"API check returned None for {manager.name}, returning 'starting'")
+        else:
+            logger.debug(f"API check returned '{status}' for {manager.name}")
+        return status if status is not None else "starting"
 
     def extract_observer_config(self, full_config: Dict[str, Any]) -> Dict[str, Any]:
         """Extract IM-specific view: only managed=true apps with required fields."""
@@ -192,13 +324,8 @@ class IMObserver(BaseConfigObserver):
                 await manager.start()
                 self.managed_ims[im_key] = manager
                 
-                # Wait for connection
-                try:
-                    await asyncio.sleep(0.2)
-                    while manager.current_state not in ["LOGIN", "ONLINE"] and manager.running:
-                        await manager.state_changed.wait()
-                except Exception as e:
-                    logger.error(f"Error waiting for IM manager {blue(im_key)}: {e}")
+                # Wait until login API is available
+                await self._wait_for_api_ready(manager, im_key, timeout=60)
 
     async def config_from_state(self) -> Dict[str, Any]:
         """Read current IM configuration from running containers."""
@@ -213,7 +340,6 @@ class IMObserver(BaseConfigObserver):
             name = container.get("name", "")
             ports = container.get("ports", {})
             running = container.get("running", False)
-            state = container.get("state", "unknown")
             
             # Extract account from container name (format: im-{hash}-{account})
             parts = name.split('-')
@@ -222,9 +348,11 @@ class IMObserver(BaseConfigObserver):
             # Get app name from labels, or derive from container name
             app_name = labels.get("amadeus.app.name", name)
             
-            # Determine OneBot server URL
-            onebot_port = ports.get(3001, 0)
-            onebot_server = f"ws://localhost:{onebot_port}"
+            # Always set onebot_server for running containers (status will be checked in main.py)
+            onebot_server = ""
+            if running:
+                onebot_port = ports.get(3001, 0)
+                onebot_server = f"ws://localhost:{onebot_port}"
             
             app_config = {
                 "name": app_name,
@@ -237,13 +365,18 @@ class IMObserver(BaseConfigObserver):
         return {"apps": current_apps}
 
     async def close(self):
-        """Close all managed IM containers."""
+        """Close all managed IM containers and HTTP session."""
         active_ims = list(self.managed_ims.values())
         if active_ims:
             logger.info(f"Closing {len(active_ims)} IM manager(s)...")
         for manager in active_ims:
             await manager.close()
         self.managed_ims.clear()
+        
+        # Close HTTP session
+        if self._http_session and not self._http_session.closed:
+            await self._http_session.close()
+        self._http_session = None
 
 
 class AmadeusObserver(BaseConfigObserver):

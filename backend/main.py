@@ -167,30 +167,47 @@ async def app_enhancer(
     # Check Docker status
     
     onebot_server = instance.get("onebot_server", "")
+    
+    # Initialize variables for later use
+    im_manager = None
+    im_observer = None
 
     if instance.get("managed", False):
         im_name = f"im-{md5(instance_name.encode()).hexdigest()[:10]}-{instance.get('account', 'default')}"
-        im_manager = None
         for observer in WorkerManager.observers:
             if isinstance(observer, IMObserver):
                 im_manager = observer.managed_ims.get(im_name)
+                im_observer = observer
                 break
+        
         manager_status = "🛑已停止"
+        
         if im_manager:
             backend_port = im_manager.ports.get(6099)
             if 3001 in im_manager.ports:
                 send_port = im_manager.ports.get(3001)
                 onebot_server = f"ws://localhost:{send_port}"
+            
             if not im_manager.running:
                 manager_status = "🛑已停止"
-            elif im_manager.current_state == "LOGIN":
-                manager_status = f"🟡运行中(未登录) | [点击登录](http://localhost:{backend_port}/webui?token=napcat)"
-            elif im_manager.current_state == "ONLINE":
-                manager_status = f"🟢运行中(已登录) | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
             else:
-                manager_status = f"🔵状态: {im_manager.current_state}"
-        else:
-            pass
+                # Real-time status check
+                logger.info(f"Enhancer: Checking real-time status for {blue(instance_name)}")
+                try:
+                    connection_status = await im_observer._get_container_status(im_manager)
+                    logger.info(f"Enhancer: Real-time status for {blue(instance_name)}: {connection_status}")
+                    
+                    if connection_status == "LOGIN":
+                        manager_status = f"🟡运行中(未登录) | [点击登录](http://localhost:{backend_port}/webui?token=napcat)"
+                    elif connection_status == "ONLINE":
+                        manager_status = f"🟢运行中(已登录) | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
+                    elif connection_status == "starting":
+                        manager_status = f"🔵正在启动... | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
+                    else:
+                        manager_status = f"🔵状态: {connection_status}"
+                except Exception as e:
+                    logger.warning(f"Enhancer: Failed to check real-time status for {blue(instance_name)}: {e}")
+                    manager_status = f"🔵状态检查失败 | [访问后台](http://localhost:{backend_port}/webui?token=napcat)"
         schema["schema"]["properties"]["onebot_server"]["readOnly"] = True
         schema["schema"]["properties"]["onebot_server"]["hidden"] = True
         # Add Docker status to managed description
@@ -209,6 +226,8 @@ async def app_enhancer(
             schema["schema"]["properties"]["managed"]["description"] = docker_status
 
     if onebot_server:
+        logger.debug(f"Enhancer: Found onebot_server for app {blue(instance_name)}: {green(onebot_server)}")
+        
         if not instance.get("managed", False):
             from amadeus.executors.im import WsConnector
 
@@ -224,6 +243,21 @@ async def app_enhancer(
         im = InstantMessagingClient(api_base=onebot_server)
         try:
             logger.info(f"Enhancer: Fetching joined groups for app {blue(instance_name)} from {green(onebot_server)}")
+            
+            # Check real-time connection status if managed
+            if instance.get("managed", False) and im_observer and im_manager:
+                try:
+                    connection_status = await im_observer._get_container_status(im_manager)
+                    logger.debug(f"Enhancer: Real-time connection status for app {blue(instance_name)}: {connection_status}")
+                    
+                    if connection_status != "ONLINE":
+                        logger.warning(f"Enhancer: App {blue(instance_name)} is not online (status: {connection_status}), but trying to get groups anyway")
+                except Exception as e:
+                    logger.warning(f"Enhancer: Failed to check real-time status for app {blue(instance_name)}: {e}")
+            else:
+                logger.debug(f"Enhancer: Non-managed app {blue(instance_name)}, will test WebSocket connection directly")
+            
+            # Try to get groups
             groups = await im.get_joined_groups()
             if groups:
                 logger.info(f"Enhancer: Successfully fetched {green(len(groups))} groups for app {blue(instance_name)}.")
@@ -231,10 +265,25 @@ async def app_enhancer(
                     {"title": group["group_name"], "const": str(group["group_id"])}
                     for group in groups
                 ]
+            else:
+                logger.warning(f"Enhancer: No groups returned for app {blue(instance_name)} from {green(onebot_server)}")
             return schema
         except Exception as e:
-            logger.error(f"Enhancer: Failed to fetch joined groups for app {blue(instance_name)} from {green(onebot_server)}: {red(str(e))}")
+            logger.warning(f"Enhancer: Failed to fetch joined groups for app {blue(instance_name)} from {green(onebot_server)}: {red(str(e))}")
+            logger.debug(f"Enhancer: Error details for app {blue(instance_name)}: {e.__class__.__name__}: {e}")
             pass
+    else:
+        logger.debug(f"Enhancer: No onebot_server found for app {blue(instance_name)}")
+        
+        # Show real-time status if managed
+        if instance.get("managed", False) and im_observer and im_manager:
+            try:
+                connection_status = await im_observer._get_container_status(im_manager)
+                logger.debug(f"Enhancer: Instance data: managed={instance.get('managed', False)}, real-time_connection_status={connection_status}")
+            except Exception as e:
+                logger.debug(f"Enhancer: Instance data: managed={instance.get('managed', False)}, status_check_failed={e}")
+        else:
+            logger.debug(f"Enhancer: Instance data: managed={instance.get('managed', False)}, non_managed_or_no_container")
 
     return schema
 

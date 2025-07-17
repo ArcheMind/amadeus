@@ -5,7 +5,7 @@ openai
 # lvldb
 lmdb
 sqlite-vec
-# aiohttp
+aiohttp
 # kuzu
 aiolimiter
 beautifulsoup4

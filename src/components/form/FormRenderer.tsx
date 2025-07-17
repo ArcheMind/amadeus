@@ -3,7 +3,6 @@ import { useForm, useFieldArray } from 'react-hook-form';
 import { Button } from '../ui/Button';
 import { Input } from '../ui/Input';
 import { Textarea } from '../ui/Textarea';
-import { Checkbox } from '../ui/Checkbox';
 import { Switch } from '../ui/Switch';
 import { Select } from '../ui/Select';
 import { Loader2, Plus, Trash2, ChevronUp, ChevronDown, Edit3, Save, X, ExternalLink } from 'lucide-react';
@@ -558,6 +557,8 @@ const FormRenderer: React.FC<FormRendererProps> = ({
               onFocus={() => handleFieldFocus(fieldPath)}
               onBlur={() => handleFieldBlur(fieldPath)}
               readOnly={field.readOnly}
+              minRows={2}
+              maxRows={8}
             />
           );
         }
@@ -642,7 +643,8 @@ const FormRenderer: React.FC<FormRendererProps> = ({
                   onChange={(e) => handleFieldChange(fieldPath, e.target.value)}
                   onFocus={() => handleFieldFocus(fieldPath)}
                   onBlur={() => handleFieldBlur(fieldPath)}
-                  rows={12}
+                  minRows={6}
+                  maxRows={20}
                 />
                 <div className="absolute top-2 right-2 flex gap-1">
                   <Button

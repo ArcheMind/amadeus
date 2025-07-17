@@ -133,11 +133,8 @@ def check_docker_status():
             return True, "🟢检测到 Docker"
         else:
             return False, "🔴未检测到 Docker"
-            
-    except subprocess.TimeoutExpired:
-        return False, "🔴Docker检测超时"
     except FileNotFoundError:
-        return False, "🔴Docker未安装"
+        return False, "🔴未检测到 Docker"
     except Exception as e:
         return False, f"🔴Docker检测失败: {str(e)}"
 

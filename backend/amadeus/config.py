@@ -3,6 +3,7 @@ import sys
 import json
 import os
 import pydantic
+from loguru import logger
 
 
 EMBEDDING_MODEL = "textembedding-gecko-001"
@@ -45,7 +46,13 @@ class LazyConfig:
     def __getattr__(self, name):
         if self._config is None:
             config_str = os.environ.get("AMADEUS_CONFIG", "{}")
-            self._config = Config.model_validate(yaml.safe_load(config_str))
+            try:
+                self._config = Config.model_validate(yaml.safe_load(config_str))
+            except Exception as e:
+                import traceback
+
+                logger.error(traceback.format_exc())
+                self._config = Config(name="default")
         return getattr(self._config, name)
 
 

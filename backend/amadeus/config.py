@@ -31,7 +31,6 @@ class Character(pydantic.BaseModel):
 
 class Config(pydantic.BaseModel):
     name: str
-    protocol: str
     onebot_server: str
     character: Character
     enable: bool

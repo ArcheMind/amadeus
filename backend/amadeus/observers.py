@@ -10,7 +10,8 @@ from loguru import logger
 from amadeus.common import yellow, blue, green
 from amadeus.manager.docker_manager import DockerRunManager
 from amadeus.manager.im.napcat import get_napcat_manager
-
+from amadeus.manager.multiprocess_manager import MultiprocessManager, MultiprocessState
+from amadeus.worker import run_amadeus_app_target
 
 def find_item(config_data, section_key, item_name):
     section_items = config_data.get(section_key, [])
@@ -401,11 +402,10 @@ class IMObserver(BaseConfigObserver):
 
 
 class AmadeusObserver(BaseConfigObserver):
-    """Observer for managing Amadeus worker tasks based on configuration."""
+    """Observer for managing Amadeus worker processes based on configuration."""
     
     def __init__(self):
-        self.amadeus_tasks: Dict[str, asyncio.Task] = {}
-        self.task_configs: Dict[str, Dict[str, Any]] = {}  # Store config for each task
+        self.amadeus_workers: Dict[str, MultiprocessManager] = {}
         self.watcher: Optional[asyncio.Task] = None
 
     def extract_observer_config(self, full_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -451,165 +451,153 @@ class AmadeusObserver(BaseConfigObserver):
         return result_config
 
     async def config_to_state(self, config: Dict[str, Any]) -> None:
-        """Apply Amadeus configuration to worker tasks."""
+        """Apply Amadeus configuration to worker processes."""
         logger.info(f"{yellow('--- AmadeusObserver applying configuration ---')}")
         
         # Build target state map
-        target_tasks = {}
+        target_workers = {}
         for app_config in config.get("apps", []):
             if app_config.get("enable", False):
-                task_name = f"amadeus-{app_config['config_hash']}"
-                target_tasks[task_name] = app_config
+                worker_name = f"amadeus-{app_config['config_hash']}"
+                target_workers[worker_name] = app_config
 
-        current_tasks = set(self.amadeus_tasks.keys())
-        target_tasks_set = set(target_tasks.keys())
+        current_workers = set(self.amadeus_workers.keys())
+        target_workers_set = set(target_workers.keys())
 
-        # Remove obsolete tasks
-        to_remove = current_tasks - target_tasks_set
+        # Remove obsolete workers
+        to_remove = current_workers - target_workers_set
         if to_remove:
-            logger.info(f"Stopping {len(to_remove)} Amadeus task(s): {', '.join(map(blue, to_remove))}")
-            for task_key in to_remove:
-                if task_key in self.amadeus_tasks:
-                    task = self.amadeus_tasks[task_key]
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                    del self.amadeus_tasks[task_key]
-                    if task_key in self.task_configs:
-                        del self.task_configs[task_key]
+            logger.info(f"Stopping {len(to_remove)} Amadeus worker(s): {', '.join(map(blue, to_remove))}")
+            for worker_key in to_remove:
+                if worker_key in self.amadeus_workers:
+                    manager = self.amadeus_workers[worker_key]
+                    await manager.close()
+                    del self.amadeus_workers[worker_key]
 
-        # Add new tasks
-        to_add = target_tasks_set - current_tasks
+        # Add new workers
+        to_add = target_workers_set - current_workers
         if to_add:
-            logger.info(f"Starting {len(to_add)} Amadeus task(s): {', '.join(map(blue, to_add))}")
-            for task_key in to_add:
-                app_config = target_tasks[task_key]
+            logger.info(f"Starting {len(to_add)} Amadeus worker(s): {', '.join(map(blue, to_add))}")
+            for worker_key in to_add:
+                app_config = target_workers[worker_key]
+                app_yaml = yaml.safe_dump(app_config["processed_config"], allow_unicode=True, sort_keys=True)
+
+                manager = MultiprocessManager(
+                    name=worker_key,
+                    target=run_amadeus_app_target,
+                    args=(app_yaml, worker_key),
+                    stream_logs=True,
+                )
                 
-                # Store config for this task
-                self.task_configs[task_key] = {
+                # Store metadata for config recovery
+                manager.metadata = {
                     "app_name": app_config["name"],
                     "config_hash": app_config["config_hash"],
                     "processed_config": app_config["processed_config"],
                 }
                 
-                # Create and start the task
-                task = asyncio.create_task(self._run_amadeus_app(app_config["processed_config"], task_key))
-                self.amadeus_tasks[task_key] = task
-                logger.info(f"Amadeus task {blue(task_key)} started successfully")
+                await manager.start()
+                await asyncio.sleep(3)  # Wait to detect early failures
+                
+                # Check if process is still running after initial period
+                if manager.current_state == MultiprocessState.RUNNING:
+                    self.amadeus_workers[worker_key] = manager
+                    logger.info(f"Amadeus worker {blue(worker_key)} started successfully")
+                else:
+                    # Keep failed manager for state synchronization
+                    self.amadeus_workers[worker_key] = manager
+                    logger.error(f"Failed to start Amadeus worker {blue(worker_key)}")
 
-        # Start task watcher if needed
-        if self.amadeus_tasks and (self.watcher is None or self.watcher.done()):
-            logger.info("Starting task watcher.")
-            self.watcher = asyncio.create_task(self.watch_tasks())
-
-    async def _run_amadeus_app(self, processed_config: Dict[str, Any], task_name: str):
-        """
-        Run an Amadeus app as an asyncio task.
-        This function sets up the environment and runs the app.
-        """
-        import os
-        import yaml
-        
-        try:
-            # Set up environment variables for the app
-            config_yaml = yaml.safe_dump(processed_config, allow_unicode=True, sort_keys=True)
-            original_config = os.environ.get("AMADEUS_CONFIG")
-            original_app_name = os.environ.get("AMADEUS_APP_NAME")
-            
-            os.environ["AMADEUS_CONFIG"] = config_yaml
-            os.environ["AMADEUS_APP_NAME"] = task_name
-            
-            logger.info(f"Starting Amadeus app {blue(task_name)}")
-            
-            # Import and run the async main function
-            from amadeus.app import async_main
-            await async_main()
-            
-        except asyncio.CancelledError:
-            logger.info(f"Amadeus app {blue(task_name)} was cancelled")
-            raise
-        except Exception as e:
-            logger.error(f"Amadeus app {blue(task_name)} failed with error: {e}")
-            raise
-        finally:
-            # Restore original environment variables
-            if original_config is not None:
-                os.environ["AMADEUS_CONFIG"] = original_config
-            else:
-                os.environ.pop("AMADEUS_CONFIG", None)
-            
-            if original_app_name is not None:
-                os.environ["AMADEUS_APP_NAME"] = original_app_name
-            else:
-                os.environ.pop("AMADEUS_APP_NAME", None)
+        # Start process watcher if needed
+        if self.amadeus_workers and (self.watcher is None or self.watcher.done()):
+            logger.info("Starting process watcher.")
+            self.watcher = asyncio.create_task(self.watch_processes())
 
     async def config_from_state(self) -> Dict[str, Any]:
-        """Read current Amadeus configuration from actual running tasks."""
+        """Read current Amadeus configuration from actual running processes."""
         current_apps = []
         
-        # Check all managed tasks and their real states
-        for task_key, task in self.amadeus_tasks.items():
-            # Get task info from stored config
-            task_config = self.task_configs.get(task_key, {})
-            app_name = task_config.get("app_name", f"amadeus_app_{task_key.replace('amadeus-', '')}")
-            config_hash = task_config.get("config_hash", task_key.replace("amadeus-", ""))
-            processed_config = task_config.get("processed_config")
+        # Check all managed workers and their real process states
+        for worker_key, manager in self.amadeus_workers.items():
+            # Check real process state (not just cached manager state)
+            real_process_state = await self._check_real_process_state(manager)
             
-            # Determine task status
-            if task.done():
-                try:
-                    await task  # This will raise the exception if task failed
-                    task_status = "stopped"  # Task completed successfully
-                except asyncio.CancelledError:
-                    task_status = "stopped"  # Task was cancelled
-                except Exception:
-                    task_status = "error"  # Task failed with exception
-            elif task.cancelled():
-                task_status = "stopped"
-            else:
-                task_status = "running"
+            # Get app info from stored metadata
+            metadata = getattr(manager, 'metadata', {})
+            app_name = metadata.get("app_name", f"amadeus_app_{worker_key.replace('amadeus-', '')}")
+            config_hash = metadata.get("config_hash", worker_key.replace("amadeus-", ""))
+            processed_config = metadata.get("processed_config")
             
             app_config = {
                 "name": app_name,
                 "enable": True,
                 "config_hash": config_hash,
-                "_process_status": task_status,
+                "_process_status": real_process_state,
                 "processed_config": processed_config,
             }
             current_apps.append(app_config)
         
         return {"apps": current_apps}
+    
+    async def _check_real_process_state(self, manager: MultiprocessManager) -> str:
+        """Check the actual process state, not just the manager's cached state."""
+        import psutil
+        
+        try:
+            if not manager._process:
+                return "stopped"
+            
+            # Check if process actually exists and is running
+            try:
+                process = psutil.Process(manager._process.pid)
+                if process.is_running():
+                    status = process.status()
+                    if status == psutil.STATUS_RUNNING:
+                        return "running"
+                    elif status in [psutil.STATUS_SLEEPING, psutil.STATUS_DISK_SLEEP]:
+                        return "running"  # Still considered running
+                    elif status == psutil.STATUS_ZOMBIE:
+                        return "stopped"
+                    else:
+                        return "unknown"
+                else:
+                    return "stopped"
+            except psutil.NoSuchProcess:
+                return "stopped"
+                
+        except Exception as e:
+            logger.warning(f"Failed to check real process state for {manager.name}: {e}")
+            # Fallback to manager's cached state
+            if manager.current_state == MultiprocessState.RUNNING:
+                return "running"
+            elif manager.current_state == MultiprocessState.STARTING:
+                return "starting"
+            elif manager.current_state == MultiprocessState.STOPPING:
+                return "stopping"
+            elif manager.current_state == MultiprocessState.ERROR:
+                return "error"
+            else:
+                return "stopped"
 
-    async def watch_tasks(self):
-        """Watch worker tasks and clean up failed ones."""
+    async def watch_processes(self):
+        """Watch worker processes and clean up failed ones."""
         while True:
             try:
-                for task_key, task in list(self.amadeus_tasks.items()):
-                    if task.done():
-                        try:
-                            await task  # This will raise the exception if task failed
-                            logger.info(f"Amadeus task {blue(task_key)} completed successfully")
-                        except asyncio.CancelledError:
-                            logger.info(f"Amadeus task {blue(task_key)} was cancelled")
-                        except Exception as e:
-                            logger.error(f"Amadeus task {blue(task_key)} failed with error: {e}")
-                        
-                        # Remove completed/failed tasks
-                        del self.amadeus_tasks[task_key]
-                        if task_key in self.task_configs:
-                            del self.task_configs[task_key]
-                
+                for process_hash, manager in list(self.amadeus_workers.items()):
+                    if manager.current_state != MultiprocessState.RUNNING:
+                        logger.warning(f"Amadeus worker {blue(manager.name)} is no longer running. Removing it.")
+                        await manager.close()
+                        if process_hash in self.amadeus_workers:
+                            del self.amadeus_workers[process_hash]
                 await asyncio.sleep(5)
             except asyncio.CancelledError:
-                logger.info("Task watcher cancelled.")
+                logger.info("Process watcher cancelled.")
                 break
             except Exception as e:
-                logger.error(f"Error in task watcher: {e}")
+                logger.error(f"Error in process watcher: {e}")
     
     async def close(self):
-        """Close all managed Amadeus tasks."""
+        """Close all managed Amadeus workers."""
         if self.watcher:
             self.watcher.cancel()
             try:
@@ -617,17 +605,10 @@ class AmadeusObserver(BaseConfigObserver):
             except asyncio.CancelledError:
                 pass
         
-        active_tasks = list(self.amadeus_tasks.values())
-        if active_tasks:
-            logger.info(f"Closing {len(active_tasks)} Amadeus task(s)...")
+        active_processes = list(self.amadeus_workers.values())
+        if active_processes:
+            logger.info(f"Closing {len(active_processes)} Amadeus worker(s)...")
+        for manager in active_processes:
+            await manager.close()
         
-        # Cancel all tasks
-        for task in active_tasks:
-            task.cancel()
-        
-        # Wait for all tasks to complete
-        if active_tasks:
-            await asyncio.gather(*active_tasks, return_exceptions=True)
-        
-        self.amadeus_tasks.clear()
-        self.task_configs.clear()
+        self.amadeus_workers.clear()

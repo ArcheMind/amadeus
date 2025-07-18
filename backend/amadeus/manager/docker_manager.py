@@ -1,5 +1,6 @@
 import asyncio
 import os
+import platform
 import re
 import sys
 from enum import Enum, unique
@@ -22,6 +23,75 @@ class DockerContainerState(Enum):
 
 class DockerRunManager:
     _managers: Dict[str, 'DockerRunManager'] = {}
+    _docker_path: Optional[str] = None
+    
+    @classmethod
+    def _find_docker_path(cls) -> Optional[str]:
+        """Find Docker executable path across different platforms and common locations."""
+        if cls._docker_path:
+            return cls._docker_path
+            
+        system = platform.system().lower()
+        
+        # Common Docker paths by platform
+        if system == "darwin":  # macOS
+            common_paths = [
+                "/usr/local/bin/docker",
+                "/opt/homebrew/bin/docker", 
+                "/Applications/Docker.app/Contents/Resources/bin/docker",
+                "/usr/bin/docker"
+            ]
+        elif system == "windows":
+            common_paths = [
+                "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+                "C:\\Program Files (x86)\\Docker\\Docker\\resources\\bin\\docker.exe",
+                "docker.exe"  # Fallback to PATH
+            ]
+        else:  # Linux and others
+            common_paths = [
+                "/usr/bin/docker",
+                "/usr/local/bin/docker",
+                "/opt/docker/bin/docker",
+                "docker"  # Fallback to PATH
+            ]
+        
+        # Check if any of the common paths exist
+        for path in common_paths:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                cls._docker_path = path
+                logger.debug(f"Found Docker at: {path}")
+                return path
+        
+        # Fallback: try to find in PATH
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["which", "docker"] if system != "windows" else ["where", "docker"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                path = result.stdout.strip().split('\n')[0]
+                if os.path.isfile(path):
+                    cls._docker_path = path
+                    logger.debug(f"Found Docker in PATH: {path}")
+                    return path
+        except Exception:
+            pass
+        
+        logger.warning("Docker not found in common locations or PATH")
+        return None
+    
+    @classmethod
+    def _get_docker_command(cls) -> List[str]:
+        """Get Docker command with proper path."""
+        docker_path = cls._find_docker_path()
+        if docker_path:
+            return [docker_path]
+        else:
+            # Fallback to just "docker" - let the system handle it
+            return ["docker"]
 
     def __new__(cls, name: str, *args, **kwargs):
         if name in cls._managers:
@@ -73,7 +143,7 @@ class DockerRunManager:
             self.state_changed.clear()
 
     def _build_docker_run_command(self) -> List[str]:
-        cmd = ["docker", "run", "--name", self.name, "-d"]
+        cmd = self._get_docker_command() + ["run", "--name", self.name, "-d"]
         
         for key, value in self.docker_run_options.items():
             option = f"--{key.replace('_', '-')}"
@@ -136,16 +206,19 @@ class DockerRunManager:
 
 
     async def _get_container_id_by_name(self) -> Optional[str]:
-        return await self._run_subprocess("docker", "ps", "-a", "--filter", f"name=^{self.name}$", "--format", "{{.ID}}")
+        docker_cmd = self._get_docker_command()
+        return await self._run_subprocess(*docker_cmd, "ps", "-a", "--filter", f"name=^{self.name}$", "--format", "{{.ID}}")
 
     async def _get_container_state_by_id(self, container_id: str) -> Optional[str]:
-         return await self._run_subprocess("docker", "inspect", "-f", "{{.State.Status}}", container_id)
+         docker_cmd = self._get_docker_command()
+         return await self._run_subprocess(*docker_cmd, "inspect", "-f", "{{.State.Status}}", container_id)
 
     async def _get_container_config(self, container_id: str) -> Optional[Dict[str, Any]]:
         """Get container configuration for comparison"""
         try:
             import json
-            result = await self._run_subprocess("docker", "inspect", container_id)
+            docker_cmd = self._get_docker_command()
+            result = await self._run_subprocess(*docker_cmd, "inspect", container_id)
             if not result:
                 return None
             
@@ -236,7 +309,8 @@ class DockerRunManager:
         container_id = await self._get_container_id_by_name()
         if container_id:
             logger.info(f"Found existing container: {blue(self.name)}, removing it to use new config...")
-            await self._run_subprocess("docker", "rm", "-f", container_id)
+            docker_cmd = self._get_docker_command()
+            await self._run_subprocess(*docker_cmd, "rm", "-f", container_id)
             await asyncio.sleep(0.5)  # Brief wait for cleanup
         
         # Create new container
@@ -271,13 +345,15 @@ class DockerRunManager:
     async def stop(self):
         container_id = await self._get_container_id_by_name()
         if container_id:
-            await self._run_subprocess("docker", "stop", container_id)
+            docker_cmd = self._get_docker_command()
+            await self._run_subprocess(*docker_cmd, "stop", container_id)
         await self.set_state(DockerContainerState.STOPPED)
 
     async def remove(self):
         container_id = await self._get_container_id_by_name()
         if container_id:
-            await self._run_subprocess("docker", "rm", "-f", container_id)
+            docker_cmd = self._get_docker_command()
+            await self._run_subprocess(*docker_cmd, "rm", "-f", container_id)
         await self.set_state(DockerContainerState.STOPPED)
 
 
@@ -326,8 +402,9 @@ class DockerRunManager:
 
         proc = None
         try:
+            docker_cmd = self._get_docker_command()
             proc = await asyncio.create_subprocess_exec(
-                "docker", "logs", "-f", container_id,
+                *docker_cmd, "logs", "-f", container_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
@@ -379,7 +456,8 @@ class DockerRunManager:
         
         try:
             import json
-            result = await self._run_subprocess("docker", "inspect", "-f", "{{json .Config.Labels}}", container_id)
+            docker_cmd = self._get_docker_command()
+            result = await self._run_subprocess(*docker_cmd, "inspect", "-f", "{{json .Config.Labels}}", container_id)
             if result:
                 return json.loads(result) or {}
         except Exception as e:
@@ -395,7 +473,8 @@ class DockerRunManager:
         try:
             import json
             # Get all containers with the prefix
-            result = await cls._run_subprocess_static("docker", "ps", "-a", "--filter", f"name=^{prefix}", "--format", "{{.ID}}")
+            docker_cmd = cls._get_docker_command()
+            result = await cls._run_subprocess_static(*docker_cmd, "ps", "-a", "--filter", f"name=^{prefix}", "--format", "{{.ID}}")
             
             if not result:
                 return []
@@ -408,7 +487,7 @@ class DockerRunManager:
                     continue
                     
                 # Get detailed container info
-                inspect_result = await cls._run_subprocess_static("docker", "inspect", container_id)
+                inspect_result = await cls._run_subprocess_static(*docker_cmd, "inspect", container_id)
                 if inspect_result:
                     inspect_data = json.loads(inspect_result)
                     if inspect_data:
@@ -494,7 +573,8 @@ class DockerRunManager:
         # Force remove container
         container_id = await self._get_container_id_by_name()
         if container_id:
-            await self._run_subprocess("docker", "rm", "-f", container_id)
+            docker_cmd = self._get_docker_command()
+            await self._run_subprocess(*docker_cmd, "rm", "-f", container_id)
         
         # Clean up manager reference
         if self.name in DockerRunManager._managers:

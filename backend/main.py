@@ -104,30 +104,70 @@ async def save_config_data(config_data: dict):
     return original_config != modified_config_data
 
 
+def _find_docker_path() -> Optional[str]:
+    """Find Docker executable path across different platforms and common locations."""
+    system = platform.system().lower()
+    
+    # Common Docker paths by platform
+    if system == "darwin":  # macOS
+        common_paths = [
+            "/usr/local/bin/docker",
+            "/opt/homebrew/bin/docker", 
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+            "/usr/bin/docker"
+        ]
+    elif system == "windows":
+        common_paths = [
+            "C:\\Program Files\\Docker\\Docker\\resources\\bin\\docker.exe",
+            "C:\\Program Files (x86)\\Docker\\Docker\\resources\\bin\\docker.exe",
+            "docker.exe"  # Fallback to PATH
+        ]
+    else:  # Linux and others
+        common_paths = [
+            "/usr/bin/docker",
+            "/usr/local/bin/docker",
+            "/opt/docker/bin/docker",
+            "docker"  # Fallback to PATH
+        ]
+    
+    # Check if any of the common paths exist
+    for path in common_paths:
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    
+    # Fallback: try to find in PATH
+    try:
+        result = subprocess.run(
+            ["which", "docker"] if system != "windows" else ["where", "docker"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            path = result.stdout.strip().split('\n')[0]
+            if os.path.isfile(path):
+                return path
+    except Exception:
+        pass
+    
+    return None
+
 def check_docker_status():
     """
     Check if Docker is running on both Windows and POSIX systems.
     Returns tuple (is_running: bool, status_message: str)
     """
     try:
-        system = platform.system().lower()
+        docker_path = _find_docker_path()
+        if not docker_path:
+            return False, "🔴未检测到 Docker"
         
-        if system == "windows":
-            # For Windows, check if Docker Desktop is running
-            result = subprocess.run(
-                ["docker", "info"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-        else:
-            # For POSIX systems (Linux, macOS), check docker daemon
-            result = subprocess.run(
-                ["docker", "info"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
+        result = subprocess.run(
+            [docker_path, "info"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
         
         if result.returncode == 0:
             return True, "🟢检测到 Docker"

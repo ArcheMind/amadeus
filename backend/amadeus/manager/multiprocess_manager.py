@@ -160,13 +160,44 @@ class MultiprocessManager:
         
         if self._current_state not in [MultiprocessState.STOPPING, MultiprocessState.STOPPED]:
             if exitcode != 0:
+                # Drain remaining logs from queue when process terminates unexpectedly
+                remaining_logs = await self._drain_log_queue()
+                
                 logger.error(f"Subprocess {blue(self.name)} terminated unexpectedly with exit code {red(str(exitcode))}.")
+                if remaining_logs:
+                    logger.error(f"Remaining output from {blue(self.name)}:\n{remaining_logs}")
+                
                 await self.set_state(MultiprocessState.ERROR)
             else:
                 logger.info(f"Subprocess {blue(self.name)} finished gracefully.")
                 await self.set_state(MultiprocessState.STOPPED)
         else:
              await self.set_state(MultiprocessState.STOPPED)
+
+    async def _drain_log_queue(self) -> str:
+        """Drain remaining logs from the queue when process terminates unexpectedly."""
+        if not self._log_queue:
+            return ""
+        
+        remaining_logs = []
+        loop = asyncio.get_event_loop()
+        
+        try:
+            # Drain all remaining logs from the queue
+            while True:
+                try:
+                    line = await asyncio.wait_for(
+                        loop.run_in_executor(None, self._log_queue.get_nowait),
+                        timeout=0.1
+                    )
+                    if line and line.strip():
+                        remaining_logs.append(line.strip())
+                except (Empty, asyncio.TimeoutError):
+                    break
+        except Exception as e:
+            logger.debug(f"Error draining log queue: {e}")
+        
+        return "\n".join(remaining_logs)
 
 
     async def _monitor_logs_for_custom_states(self):

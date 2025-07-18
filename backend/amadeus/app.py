@@ -169,6 +169,9 @@ async def message_handler(data):
 
 
 async def _main():
+    # 故意制造一个错误来测试日志收集功能
+    # raise RuntimeError("This is a test error to check logging functionality.")
+    
     for daemon in DAEMONS:
         if daemon not in _TASKS:
             logger.info(f"Starting daemon: {green(daemon.__name__)}")

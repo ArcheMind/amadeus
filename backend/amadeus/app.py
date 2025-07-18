@@ -196,11 +196,17 @@ async def _main():
                 success = await helper.start()
                 if success:
                     logger.info(f"Successfully connected to IM client at {green(uri)} after {retry_count + 1} attempts")
-                    await helper.join()
-                    break
+                    try:
+                        logger.info(f"Waiting for WebSocket connection to {green(uri)} to close...")
+                        await helper.join()
+                        logger.warning(f"WebSocket connection to {green(uri)} closed unexpectedly, will retry")
+                    except Exception as e:
+                        logger.error(f"Error in WebSocket connection: {e}")
+                    # Don't break here, continue retrying
                 else:
                     retry_count += 1
                     wait_time = min(15, 5 + retry_count * 2)  # Start at 5s, increase by 2s each time, cap at 15s
+                    logger.info(f"Connection failed, waiting {wait_time}s before retry {retry_count}")
                     await asyncio.sleep(wait_time)
             except Exception as e:
                 retry_count += 1
@@ -212,14 +218,28 @@ async def _main():
                     last_log_time = current_time
                 
                 wait_time = min(15, 5 + retry_count * 2)  # Start at 5s, increase by 2s each time, cap at 15s
+                logger.info(f"Connection error, waiting {wait_time}s before retry {retry_count}")
                 await asyncio.sleep(wait_time)
     
     # Start the connection task
     connection_task = asyncio.create_task(connect_with_retry())
     
-    # Wait for the connection task to complete
-    await connection_task
-    
+    # Wait for all tasks to complete (including daemons and connection)
+    logger.info(f"Waiting for {len(_TASKS)} daemon task(s) and connection task to complete...")
+    try:
+        all_tasks = list(_TASKS.values()) + [connection_task]
+        results = await asyncio.gather(*all_tasks, return_exceptions=True)
+        
+        # Log any exceptions that occurred
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                task_name = list(_TASKS.keys())[i] if i < len(_TASKS) else "connection_task"
+                logger.error(f"Task {task_name} failed with exception: {result}")
+                
+    except Exception as e:
+        logger.error(f"Error in main loop: {e}")
+        raise
+
 
 def main():
     asyncio.run(_main())

@@ -157,10 +157,10 @@ async def llm(
     except Exception:
         import traceback
 
-        logger.info("[发生错误]")
-        print(traceback.format_exc())
+        logger.error("[LLM发生错误]")
+        logger.error(f"LLM error details: {traceback.format_exc()}")
         if "response" in locals():
-            print(locals()["response"])
+            logger.error(f"LLM response context: {locals()['response']}")
 
         yield "[推理失败]"
 

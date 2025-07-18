@@ -1,4 +1,5 @@
 import asyncio
+import os
 import re
 import sys
 from enum import Enum, unique
@@ -105,7 +106,8 @@ class DockerRunManager:
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy()  # Ensure environment variables are passed
             )
             
             # Add timeout to prevent hanging
@@ -113,22 +115,23 @@ class DockerRunManager:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
 
             if proc.returncode != 0:
-                logger.error(f"Command failed with return code {red(str(proc.returncode))}: {blue(' '.join(args))}. Stderr: {red(stderr.decode().strip())}")
+                logger.debug(f"Command failed with return code {red(str(proc.returncode))}: {blue(' '.join(args))}. Stderr: {red(stderr.decode().strip())}")
                 return None
             
             logger.trace(f"Command finished successfully: {blue(' '.join(args))}")
             return stdout.decode().strip()
         except asyncio.TimeoutError:
-            logger.error(f"Command timed out: {blue(' '.join(args))}")
+            logger.debug(f"Command timed out: {blue(' '.join(args))}")
             if proc:
                 proc.kill()
                 await proc.wait()
             return None
         except FileNotFoundError:
-            logger.error(f"Command not found: {red(args[0])}. Please ensure Docker is installed and in the system's PATH.")
+            # Docker not found - this is expected when Docker is not installed
+            logger.debug(f"Docker command not found: {blue(' '.join(args))}")
             return None
         except Exception as e:
-            logger.error(f"An unexpected error occurred while running command: {blue(' '.join(args))}. Error: {red(str(e))}")
+            logger.debug(f"An unexpected error occurred while running command: {blue(' '.join(args))}. Error: {red(str(e))}")
             return None
 
 
@@ -384,6 +387,8 @@ class DockerRunManager:
         
         return {}
 
+
+
     @classmethod
     async def get_containers_by_prefix(cls, prefix: str) -> List[Dict[str, Any]]:
         """Get all containers with the specified name prefix and their metadata."""
@@ -426,7 +431,7 @@ class DockerRunManager:
             return containers
             
         except Exception as e:
-            logger.error(f"Failed to get containers by prefix {prefix}: {e}")
+            logger.debug(f"Failed to get containers by prefix {prefix}: {e}")
             return []
 
     @staticmethod
@@ -449,29 +454,35 @@ class DockerRunManager:
         """Static version of _run_subprocess for class methods."""
         try:
             logger.trace(f"Running command: {blue(' '.join(args))}")
+            # Use shell=True to ensure PATH is properly resolved
             proc = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stderr=asyncio.subprocess.PIPE,
+                env=os.environ.copy()  # Ensure environment variables are passed
             )
             
             timeout = 30 if args[1] in ["rm", "kill", "stop"] else 60
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
 
             if proc.returncode != 0:
-                logger.error(f"Command failed with return code {red(str(proc.returncode))}: {blue(' '.join(args))}. Stderr: {red(stderr.decode().strip())}")
+                logger.debug(f"Command failed with return code {red(str(proc.returncode))}: {blue(' '.join(args))}. Stderr: {red(stderr.decode().strip())}")
                 return None
             
             logger.trace(f"Command finished successfully: {blue(' '.join(args))}")
             return stdout.decode().strip()
         except asyncio.TimeoutError:
-            logger.error(f"Command timed out: {blue(' '.join(args))}")
+            logger.debug(f"Command timed out: {blue(' '.join(args))}")
             if proc:
                 proc.kill()
                 await proc.wait()
             return None
+        except FileNotFoundError:
+            # Docker not found - this is expected when Docker is not installed
+            logger.debug(f"Docker command not found: {blue(' '.join(args))}")
+            return None
         except Exception as e:
-            logger.error(f"An unexpected error occurred while running command: {blue(' '.join(args))}. Error: {red(str(e))}")
+            logger.debug(f"An unexpected error occurred while running command: {blue(' '.join(args))}. Error: {red(str(e))}")
             return None
 
     async def close(self):

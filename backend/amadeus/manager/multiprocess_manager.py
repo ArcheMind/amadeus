@@ -91,10 +91,10 @@ class MultiprocessManager:
         try:
             target(*args, **kwargs)
         except Exception:
-            # import traceback
-            # Print exception to stderr which is redirected to the queue
-            # print(f"An exception occurred in the child process:\n{traceback.format_exc()}", file=sys.stderr)
+            # Log the exception to the queue
             logger.error(f"An exception occurred in the child process:\n{traceback.format_exc()}")
+            # Re-raise the exception to ensure the process exits with error code
+            raise
 
 
     def _start_monitoring_tasks(self):
@@ -198,7 +198,8 @@ class MultiprocessManager:
                 if self.current_state not in [MultiprocessState.RUNNING] and self.current_state not in self.custom_state_patterns:
                     break
                 continue
-            except Exception:
+            except Exception as e:
+                logger.error(f"Error in log monitoring for subprocess {blue(self.name)}: {e}")
                 break
 
     async def wait_for_state(self, state: Union[MultiprocessState, str], timeout: Optional[float] = None) -> bool:

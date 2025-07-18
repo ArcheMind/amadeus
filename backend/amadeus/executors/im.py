@@ -31,12 +31,13 @@ class WsConnector:
         self.event_handler = handler
 
     async def _listen_loop(self) -> NoReturn:
+        logger.debug(f"Starting WebSocket listen loop for {green(self.uri)}")
         while self._conn:
             try:
                 message = await self._conn.recv()
             except websockets.exceptions.ConnectionClosed:
                 logger.warning(
-                    f"WebSocket connection to {red(self.uri)} closed. Reconnecting..."
+                    f"WebSocket connection to {red(self.uri)} closed. Listen loop will exit."
                 )
                 break
             try:
@@ -49,6 +50,7 @@ class WsConnector:
             except json.JSONDecodeError:
                 logger.warning(f"Received invalid JSON message: {message}")
                 continue
+        logger.debug(f"WebSocket listen loop ended for {green(self.uri)}")
 
     async def start(self):
         self._is_running = True
@@ -103,7 +105,11 @@ class WsConnector:
 
     async def join(self):
         if self._listen_task:
+            logger.debug(f"Waiting for WebSocket listen task to complete for {green(self.uri)}")
             await self._listen_task
+            logger.debug(f"WebSocket listen task completed for {green(self.uri)}")
+        else:
+            logger.debug(f"No listen task to wait for {green(self.uri)}")
 
     async def stop(self):
         if self._conn:

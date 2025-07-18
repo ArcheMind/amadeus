@@ -21,7 +21,9 @@ def load_version():
             if os.path.exists(path):
                 with open(path, 'r', encoding='utf-8') as f:
                     return json.load(f)['version']
-        except Exception:
+        except Exception as e:
+            from loguru import logger
+            logger.debug(f"Failed to load version from {path}: {e}")
             continue
     
     return "1.0.0"  # 默认版本

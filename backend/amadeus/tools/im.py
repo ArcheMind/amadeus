@@ -19,7 +19,9 @@ def parse_xml_element(text):
             return element
         else:
             return None
-    except Exception:
+    except Exception as e:
+        from loguru import logger
+        logger.debug(f"Failed to parse XML element from text: {e}")
         return None
 
 

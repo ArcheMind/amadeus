@@ -168,6 +168,86 @@ async def message_handler(data):
     return True
 
 
+async def async_main():
+    """
+    Async version of main() that can be run as an asyncio task.
+    Returns when the application should stop.
+    """
+    # 故意制造一个错误来测试日志收集功能
+    # raise RuntimeError("This is a test error to check logging functionality.")
+    
+    for daemon in DAEMONS:
+        if daemon not in _TASKS:
+            logger.info(f"Starting daemon: {green(daemon.__name__)}")
+            _TASKS[daemon] = asyncio.create_task(daemon())
+    
+    uri = AMADEUS_CONFIG.onebot_server
+    logger.info(f"Starting IM client connection to {green(uri)}")
+    helper = WsConnector(uri)
+    helper.register_event_handler(message_handler)
+    
+    # Start connection in background with retry logic
+    async def connect_with_retry():
+        retry_count = 0
+        last_log_time = 0
+        
+        while True:
+            try:
+                current_time = asyncio.get_event_loop().time()
+                
+                # Log attempt only every 30 seconds to avoid spam
+                if current_time - last_log_time >= 30:
+                    logger.info(f"Attempting to connect to IM client at {green(uri)} (attempt {retry_count + 1})")
+                    last_log_time = current_time
+                
+                success = await helper.start()
+                if success:
+                    logger.info(f"Successfully connected to IM client at {green(uri)} after {retry_count + 1} attempts")
+                    try:
+                        logger.info(f"Waiting for WebSocket connection to {green(uri)} to close...")
+                        await helper.join()
+                        logger.warning(f"WebSocket connection to {green(uri)} closed unexpectedly, will retry")
+                    except Exception as e:
+                        logger.error(f"Error in WebSocket connection: {e}")
+                    # Don't break here, continue retrying
+                else:
+                    retry_count += 1
+                    wait_time = min(15, 5 + retry_count * 2)  # Start at 5s, increase by 2s each time, cap at 15s
+                    logger.info(f"Connection failed, waiting {wait_time}s before retry {retry_count}")
+                    await asyncio.sleep(wait_time)
+            except Exception as e:
+                retry_count += 1
+                current_time = asyncio.get_event_loop().time()
+                
+                # Log error only every 60 seconds to avoid spam
+                if current_time - last_log_time >= 60:
+                    logger.error(f"Error connecting to IM client at {green(uri)}: {e}")
+                    last_log_time = current_time
+                
+                wait_time = min(15, 5 + retry_count * 2)  # Start at 5s, increase by 2s each time, cap at 15s
+                logger.info(f"Connection error, waiting {wait_time}s before retry {retry_count}")
+                await asyncio.sleep(wait_time)
+    
+    # Start the connection task
+    connection_task = asyncio.create_task(connect_with_retry())
+    
+    # Wait for all tasks to complete (including daemons and connection)
+    logger.info(f"Waiting for {len(_TASKS)} daemon task(s) and connection task to complete...")
+    try:
+        all_tasks = list(_TASKS.values()) + [connection_task]
+        results = await asyncio.gather(*all_tasks, return_exceptions=True)
+        
+        # Log any exceptions that occurred
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                task_name = list(_TASKS.keys())[i] if i < len(_TASKS) else "connection_task"
+                logger.error(f"Task {task_name} failed with exception: {result}")
+                
+    except Exception as e:
+        logger.error(f"Error in main loop: {e}")
+        raise
+
+
 async def _main():
     # 故意制造一个错误来测试日志收集功能
     # raise RuntimeError("This is a test error to check logging functionality.")

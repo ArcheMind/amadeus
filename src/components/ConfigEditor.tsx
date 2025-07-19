@@ -52,7 +52,7 @@ const ConfigEditor: React.FC = () => {
 
   const configDef = configClasses?.[selectedClass];
   
-  if (loading.classes || !configDef) {
+  if (!configDef) {
     return (
       <EmptyState
         title={t('common.loading')}
@@ -101,7 +101,7 @@ const ConfigEditor: React.FC = () => {
     );
   }
   
-  if (loading.instances || (selectedClass && !currentData)) {
+  if (loading.instances && !currentData) {
     return (
       <div className="w-full h-full flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />

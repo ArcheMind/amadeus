@@ -61,16 +61,6 @@ const FormRenderer: React.FC<FormRendererProps> = ({
     };
   }, []);
 
-  // Reset form when initialData changes
-  useEffect(() => {
-    if (initialData) {
-      reset(initialData);
-      // 重置 markdown 编辑状态
-      setEditingMarkdown({});
-      setMarkdownBackups({});
-    }
-  }, [initialData, reset]);
-
   // 只记录当前焦点的字段路径
   const [focusedField, setFocusedField] = useState<string | null>(null);
   // 记录正在加载中的 switch
@@ -331,7 +321,7 @@ const FormRenderer: React.FC<FormRendererProps> = ({
         const formValues = watch();
         handleFormSubmit({ ...formValues, [fieldPath]: value });
       }
-    }, 500);
+    }, 200);
   };
 
   const handleFieldFocus = (fieldPath: string) => {
@@ -1004,7 +994,7 @@ const ArrayField: React.FC<ArrayFieldProps> = ({
         const currentValue = watch(fieldPath);
         handleFormSubmit({ [fieldPath]: currentValue });
       }
-    }, 500);
+    }, 200);
   };
 
   const handleRemove = (index: number) => {

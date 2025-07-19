@@ -22,7 +22,6 @@ export default {
     deleteDesc: 'Are you sure you want to delete this item? This action cannot be undone.',
     confirmDelete: 'Yes, Delete',
     confirm: 'Confirm',
-    selectInstanceDesc: 'Choose a configuration item from the sidebar to view or edit',
     instances: '{{count}} item',
     instances_plural: '{{count}} items',
     add: 'Add New Item',

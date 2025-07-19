@@ -22,7 +22,6 @@ export default {
     deleteDesc: '您确定要删除此项吗？此操作无法撤消。',
     confirmDelete: '是的，删除',
     confirm: '确认',
-    selectInstanceDesc: '从侧边栏选择一个对象开始',
     instances: '{{count}} 个',
     instances_plural: '{{count}} 个',
     add: '新建',

@@ -79,26 +79,7 @@ const ConfigEditor: React.FC = () => {
   const currentData = getCurrentData();
 
   if (!isSingleton && !selectedInstance) {
-    return (
-      <div className="bg-card rounded-lg border border-border shadow-sm animate-in">
-        <div className="flex items-center justify-between border-b border-border px-6 py-4">
-          <div>
-            <h2 className="text-xl font-semibold">{configDef.title}</h2>
-            <p className="text-sm text-muted-foreground">
-              {t('common.instances', { count: instances.length })}
-            </p>
-          </div>
-        </div>
-        
-        <div className="p-6">
-          <EmptyState
-            title=""
-            description={t('common.selectInstanceDesc')}
-            icon="List"
-          />
-        </div>
-      </div>
-    );
+    return null;
   }
   
   if (loading.instances && !currentData) {
@@ -253,8 +234,8 @@ const ConfigEditor: React.FC = () => {
 
   return (
     <>
-      <div className="bg-card rounded-lg border border-border shadow-sm animate-in">
-        <div className="flex items-center justify-between border-b border-border px-6 py-4">
+      <div className="bg-card/15 backdrop-blur-2xl rounded-lg border border-white/8 shadow-2xl shadow-primary/10 animate-in">
+        <div className="flex items-center justify-between border-b border-white/8 px-6 py-4">
           <div>
             <h2 className="text-xl font-semibold">{configDef.title}</h2>
             {!configDef.isSingleton && selectedInstance && (

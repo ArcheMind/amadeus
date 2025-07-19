@@ -2,17 +2,35 @@ import React, { useEffect, useState } from 'react';
 import Sidebar from './components/Sidebar';
 import ConfigEditor from './components/ConfigEditor';
 import Navbar from './components/Navbar';
+import Orb from './components/Orb';
 import { useStore } from './store';
 import { useTranslation } from 'react-i18next';
+import { useTheme } from './context/ThemeContext';
 import EmptyState from './components/EmptyState';
 import Terminal from './components/Terminal';
 import TerminalToggleButton from './components/TerminalToggleButton';
 
 const App: React.FC = () => {
   const { t } = useTranslation();
+  const { theme } = useTheme();
   const { selectedClass, initialize, loading } = useStore();
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [isTerminalVisible, setTerminalVisible] = useState(false);
+
+  // Orb controls state (for development)
+  const [orbHue, setOrbHue] = useState(32); // 使用强调色橙色
+  const [orbOpacity, setOrbOpacity] = useState(theme === 'dark' ? 0.35 : 0.6);
+  const [orbHoverIntensity, setOrbHoverIntensity] = useState(1.2);
+  const [orbRotateOnHover, setOrbRotateOnHover] = useState(true);
+  const isDarkMode = theme === 'dark';
+
+  // Update orb colors when theme changes
+  useEffect(() => {
+    setOrbHue(32); // 统一使用强调色橙色
+    setOrbOpacity(theme === 'dark' ? 0.35 : 0.6); // 大幅提升清晰度
+  }, [theme]);
+
+  const loadingOrbOpacity = orbOpacity * 1.5;
 
   useEffect(() => {
     const init = async () => {
@@ -96,8 +114,12 @@ const App: React.FC = () => {
 
   if (loading.classes) {
     return (
-      <div className="flex h-screen items-center justify-center bg-background">
-        <div className="text-center">
+      <div className="flex h-screen items-center justify-center bg-background relative">
+        {/* Orb background layer */}
+        <div className="fixed inset-0 w-full h-full pointer-events-none">
+          <Orb hue={orbHue} hoverIntensity={orbHoverIntensity * 0.6} rotateOnHover={orbRotateOnHover} forceHoverState={false} isDarkMode={isDarkMode} />
+        </div>
+        <div className="text-center relative z-10">
           <h2 className="text-xl font-semibold mb-2">{t('common.loading')}</h2>
           <p className="text-muted-foreground">{t('common.loadingDesc')}</p>
         </div>
@@ -106,10 +128,17 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
+    <div className="flex h-screen overflow-hidden bg-background relative">
+      {/* Orb background layer */}
+      <div className="fixed inset-0 w-full h-full z-0">
+        <Orb hue={orbHue} hoverIntensity={orbHoverIntensity} rotateOnHover={orbRotateOnHover} forceHoverState={false} isDarkMode={isDarkMode} />
+      </div>
       
-      <div className="flex flex-col flex-1 overflow-hidden">
+      <div className="relative z-10">
+        <Sidebar isOpen={sidebarOpen} onToggle={() => setSidebarOpen(!sidebarOpen)} />
+      </div>
+      
+      <div className="flex flex-col flex-1 overflow-hidden relative z-10">
         <Navbar onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
         
         <main className="flex-1 overflow-auto p-4 md:p-6">

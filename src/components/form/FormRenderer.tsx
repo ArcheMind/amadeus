@@ -845,7 +845,7 @@ const FormRenderer: React.FC<FormRendererProps> = ({
       
       case 'object':
         return (
-          <div className="space-y-4 border border-border rounded-md p-4">
+          <div className="space-y-4 border border-white/8 bg-card/10 backdrop-blur-xl rounded-lg p-4">
             {field.properties && Object.entries(field.properties).map(([subKey, subField]: [string, any]) => {
               if (subField.hidden) return null;
               return (
@@ -1185,7 +1185,7 @@ const ArrayField: React.FC<ArrayFieldProps> = ({
       {fields.length > 0 && (
         <div className="space-y-3">
           {fields.map((_, index) => (
-            <div key={fields[index].id} className="space-y-3 p-4 border border-border rounded-md bg-background">
+            <div key={fields[index].id} className="space-y-3 p-4 border border-white/8 bg-card/10 backdrop-blur-xl rounded-lg">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-medium">
                   {field.items.title || `${t('common.item')} ${index + 1}`}

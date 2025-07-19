@@ -29,12 +29,8 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       return savedTheme;
     }
     
-    // Check system preference
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
-      return 'dark';
-    }
-    
-    return 'dark'; // Discord-like default
+    // Default to dark mode if no theme is saved
+    return 'dark';
   });
 
   // Update theme class on document
@@ -50,7 +46,9 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  // Watch for system preference changes
+  // We no longer need to watch for system preference changes
+  // The useEffect for system preference watching can be removed.
+  /*
   useEffect(() => {
     if (!window.matchMedia) return;
     
@@ -66,6 +64,7 @@ export const ThemeProvider: React.FC<ThemeProviderProps> = ({ children }) => {
       mediaQuery.removeEventListener('change', handleChange);
     };
   }, []);
+  */
 
   const toggleTheme = () => {
     setTheme(prev => (prev === 'dark' ? 'light' : 'dark'));

@@ -107,7 +107,7 @@ const Sidebar: React.FC<SidebarProps> = ({ isOpen, onToggle }) => {
   if (!configClasses) {
     return (
       <aside className={cn(
-        "h-full bg-card border-r border-border transition-all duration-300 flex-shrink-0 overflow-hidden",
+        "h-full bg-card/12 backdrop-blur-2xl border-r border-white/8 transition-all duration-300 flex-shrink-0 overflow-hidden shadow-xl shadow-primary/5",
         isOpen ? "w-64" : "w-0"
       )}>
         <div className="flex items-center justify-center h-full">

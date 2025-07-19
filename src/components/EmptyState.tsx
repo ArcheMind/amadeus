@@ -7,14 +7,18 @@ interface EmptyStateProps {
   description: string;
   icon: string;
   isSpinning?: boolean;
+  showBackground?: boolean;
 }
 
-const EmptyState: React.FC<EmptyStateProps> = ({ title, description, icon, isSpinning = false }) => {
+const EmptyState: React.FC<EmptyStateProps> = ({ title, description, icon, isSpinning = false, showBackground = true }) => {
   // Dynamically get icon component
   const IconComponent = (Icons as any)[icon] || Icons.HelpCircle;
 
   return (
-    <div className="text-center p-8 bg-card h-full flex flex-col items-center justify-center">
+    <div className={cn(
+      "text-center p-8 h-full flex flex-col items-center justify-center",
+      showBackground && "bg-card"
+    )}>
       <div className="flex items-center justify-center w-16 h-16 rounded-full bg-muted mb-4">
         <IconComponent className={cn("h-8 w-8 text-muted-foreground", { 'animate-spin': isSpinning })} />
       </div>

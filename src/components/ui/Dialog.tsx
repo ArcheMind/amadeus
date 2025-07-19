@@ -28,7 +28,7 @@ export const Dialog: React.FC<DialogProps> = ({
         onClick={onClose}
       />
       <div className={cn(
-        "relative bg-card rounded-lg shadow-lg w-full max-w-md p-6 animate-in",
+        "relative bg-card/18 backdrop-blur-2xl rounded-xl shadow-2xl shadow-primary/15 border border-white/10 w-full max-w-md p-6 animate-in",
         className
       )}>
         <button

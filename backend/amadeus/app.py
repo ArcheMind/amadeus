@@ -3,7 +3,7 @@ import collections
 import asyncio
 from amadeus.common import gray, green, blue, red, yellow
 from amadeus.llm import llm
-from amadeus.tools.im import QQChat
+from amadeus.tools.context import ChatContext
 from amadeus.config import AMADEUS_CONFIG
 from loguru import logger
 
@@ -35,28 +35,21 @@ async def user_loop():
                 
                 logger.info(f"Processing event for target: {green(chat_type)} {blue(target_id)}")
 
-                qq_chat = QQChat(
-                    api_base=AMADEUS_CONFIG.onebot_server,
+                # 使用ChatContext架构：user_loop -> context -> tools
+                chat_context = ChatContext(
                     chat_type=chat_type,
                     target_id=target_id,
+                    api_base=AMADEUS_CONFIG.onebot_server,
                 )
-                logger.trace(f"Viewing chat context for {green(chat_type)} {blue(target_id)}")
-                content = await qq_chat.view_chat_context()
+                
+                logger.trace(f"Building chat context for {green(chat_type)} {blue(target_id)}")
+                content = await chat_context.build_chat_prompt(last_view=state.last_view)
                 state.last_view = state.next_view
 
-                TOOL_MAP = {
-                    "撤回消息": qq_chat.delete_message,
-                    "群管理-禁言": qq_chat.set_group_ban,
-                }
-
-                tools = [
-                    TOOL_MAP[t]
-                    for t in AMADEUS_CONFIG.enabled_tools
-                    if t in TOOL_MAP
-                ]
+                tools = chat_context.get_tools()
                 
-                logger.info(f"Calling LLM for target: {green(chat_type)} {blue(target_id)} with {len(tools) + 2} tools.")
-                logger.trace(f"LLM input content:\n{content}")
+                logger.info(f"Calling LLM for target: {green(chat_type)} {blue(target_id)} with {len(tools)} tools.")
+                logger.info(f"LLM input:\n{content}")
 
                 async for m in llm(
                     [
@@ -65,10 +58,7 @@ async def user_loop():
                             "content": content,
                         }
                     ],
-                    tools=[
-                        qq_chat.send_message,
-                        qq_chat.ignore,
-                    ] + tools,
+                    tools=tools,
                     continue_on_tool_call=False,
                     temperature=1,
                 ):

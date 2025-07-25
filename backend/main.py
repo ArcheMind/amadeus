@@ -71,6 +71,8 @@ app = fastapi.FastAPI(
 origins = [
     "http://localhost:5173",  # Frontend dev server
     "http://127.0.0.1:5173",
+    "http://192.168.31.165:5173", # Allow specific IP
+    "http://*:*", # Allow any origin for development
     "file://",  # Allow file:// protocol for production
     "http://localhost:*",  # Allow any localhost port
     "http://127.0.0.1:*",  # Allow any localhost port

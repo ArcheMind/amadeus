@@ -592,7 +592,7 @@ async function getApiBaseUrl() {
   }
   
   // Fallback for browser development or if Electron IPC fails
-  const fallbackUrl = `http://localhost:38178`;
+  const fallbackUrl = `http://${window.location.hostname}:38178`;
   console.log("[Store] Using fallback API URL:", fallbackUrl);
   return fallbackUrl;
 }

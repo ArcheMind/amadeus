@@ -49,7 +49,6 @@ async def user_loop():
                 tools = chat_context.get_tools()
                 
                 logger.info(f"Calling LLM for target: {green(chat_type)} {blue(target_id)} with {len(tools)} tools.")
-                logger.info(f"LLM input messages:\n{messages}")
 
                 async for m in llm(
                     messages,

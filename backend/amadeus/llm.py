@@ -2,6 +2,7 @@ from openai import AsyncOpenAI
 import asyncio
 import json
 import inspect
+import yaml
 from amadeus.config import AMADEUS_CONFIG
 from amadeus.common import green
 from typing import (
@@ -34,7 +35,7 @@ async def llm(
         api_key = AMADEUS_CONFIG.character.chat_model_provider.api_key
     if model is None:
         model = AMADEUS_CONFIG.character.chat_model
-    
+
     logger.info("[开始思考]")
     tools = tools or []
     tool_specs = [t.tool_spec.model_dump(exclude_none=True) for t in tools]
@@ -47,8 +48,19 @@ async def llm(
 
     try:
         for _ in range(20):
-            logger.debug(
-                f"======================= [思考中... 消息数: {len(messages)} 工具数: {len(tool_specs)}] ======================="
+            messages_log_parts = []
+            for msg in messages:
+                role = msg.get("role", "unknown").upper()
+                content = str(msg.get("content") or "").strip()
+                if role == "USER":
+                    messages_log_parts.append(content)
+                else:
+                    messages_log_parts.append(green(content))
+
+            messages_log = "\n\n".join(messages_log_parts)
+            logger.info(
+                f"======================= [思考中... 消息数: {len(messages)} 工具数: {len(tool_specs)}] =======================\n"
+                f"{messages_log}"
             )
             if not tool_specs:
                 response = await openai_client.chat.completions.create(
@@ -132,7 +144,9 @@ async def llm(
                 )
                 for _, tool_call in current_tool_calls.items():
                     tool_name = tool_call["function"]["name"]
-                    logger.info(f"[调用工具：[{tool_name}({tool_call['function']['arguments']})]]")
+                    logger.info(
+                        f"[调用工具：[{tool_name}({tool_call['function']['arguments']})]]"
+                    )
                     if tool_name in tool_handlers:
                         handler = tool_handlers[tool_name]
                         arguments = json.loads(tool_call["function"]["arguments"])

@@ -7,28 +7,35 @@ import json
 import sys
 import time
 
+
 def load_version():
     """加载版本号，支持开发环境和打包后环境"""
     version_paths = [
         # 开发环境路径
-        os.path.join(os.path.dirname(__file__), '..', '..', 'version.json'),
+        os.path.join(os.path.dirname(__file__), "..", "..", "version.json"),
         # PyInstaller资源目录
-        os.path.join(getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__))), 'version.json'),
+        os.path.join(
+            getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__))),
+            "version.json",
+        ),
     ]
-    
+
     for path in version_paths:
         try:
             if os.path.exists(path):
-                with open(path, 'r', encoding='utf-8') as f:
-                    return json.load(f)['version']
+                with open(path, "r", encoding="utf-8") as f:
+                    return json.load(f)["version"]
         except Exception as e:
             from loguru import logger
+
             logger.debug(f"Failed to load version from {path}: {e}")
             continue
-    
+
     return "1.0.0"  # 默认版本
 
+
 APP_VERSION = load_version()
+
 
 async def iter_csv(line_generator):
     async for line in line_generator:
@@ -52,19 +59,24 @@ def sys_print(text, **kwargs):
 
 
 def green(text):
-    return f"\033[92m{text}\033[0m"
+    return "\n".join(f"\033[92m{line}\033[0m" for line in str(text).split("\n"))
+
 
 def yellow(text):
-    return f"\033[93m{text}\033[0m"
+    return "\n".join(f"\033[93m{line}\033[0m" for line in str(text).split("\n"))
+
 
 def blue(text):
-    return f"\033[94m{text}\033[0m"
+    return "\n".join(f"\033[94m{line}\033[0m" for line in str(text).split("\n"))
+
 
 def red(text):
-    return f"\033[91m{text}\033[0m"
+    return "\n".join(f"\033[91m{line}\033[0m" for line in str(text).split("\n"))
+
 
 def gray(text):
-    return f"\033[90m{text}\033[0m"
+    return "\n".join(f"\033[90m{line}\033[0m" for line in str(text).split("\n"))
+
 
 def format_timestamp(timestamp, timezone=None):
     """
@@ -137,7 +149,7 @@ def find_free_ports(n) -> tuple[int, int]:
     ports = []
     for _ in range(n):
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', 0))
+            s.bind(("", 0))
             ports.append(s.getsockname()[1])
             sockets.append(s)
     return tuple(ports)

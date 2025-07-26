@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 from amadeus.config import AMADEUS_CONFIG
 from amadeus.tools.im import QQChat
+from loguru import logger
 
 
 class ChatContext:
@@ -24,20 +25,40 @@ class ChatContext:
             )
         return self._qq_chat
 
+    def _aggregate_user_messages(
+        self, messages: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """将连续的user消息聚合到一起"""
+        if not messages:
+            return []
+
+        aggregated = []
+        for msg in messages:
+            # 特殊标记不参与聚合
+            content = msg.get("content", "")
+            is_special_marker = (
+                "[上次你看到了这里]" in content or "[更早的消息已经看不到了]" in content
+            )
+
+            if (
+                aggregated
+                and aggregated[-1]["role"] == "user"
+                and msg["role"] == "user"
+                and not is_special_marker
+                and "[上次你看到了这里]" not in aggregated[-1].get("content", "")
+                and "[更早的消息已经看不到了]" not in aggregated[-1].get("content", "")
+            ):
+                aggregated[-1]["content"] += f"{content}"
+            else:
+                aggregated.append(msg.copy())
+        return aggregated
+
     async def build_chat_messages(
         self, from_message_id: int = 0, last_view: float = None
     ) -> List[Dict[str, Any]]:
         """
         构建聊天上下文的messages，格式为llm可直接使用.
-        注意：这是一个临时的实现，将整个prompt塞进了system message
         """
-        prompt_string = await self.build_chat_prompt(from_message_id, last_view)
-        return [{"role": "system", "content": prompt_string}]
-
-    async def build_chat_prompt(
-        self, from_message_id: int = 0, last_view: float = None
-    ) -> str:
-        """构建聊天上下文的prompt，支持last_view分割线"""
         my_name = (await self.qq_chat.client.get_login_info())["nickname"]
         messages = await self.qq_chat.client.get_chat_history(
             self.chat_type,
@@ -45,69 +66,75 @@ class ChatContext:
             from_message_id,
             count=8,
         )
-        # 插入[上次你看到这里]分割线
-        msgs = await self._render_msgs_with_last_view(messages, last_view)
+
         groupcard = await self.qq_chat.client.get_group_name(self.target_id)
         intro = AMADEUS_CONFIG.character.personality
         idio_section = self._get_idio_section()
-        return self._build_prompt_template(
-            my_name, groupcard, msgs, idio_section, intro
+
+        placeholder = "%%MSGS%%"
+        prompt_shell = self._build_prompt_template(
+            my_name, groupcard, placeholder, idio_section, intro
         )
 
-    async def _render_msgs_with_last_view(self, messages, last_view):
-        """渲染消息并插入分割线"""
+        prefix, suffix = prompt_shell.split(placeholder)
+
+        final_messages = [{"role": "system", "content": prefix.strip()}]
+
+        raw_history_messages = []
+
         if last_view is None:
-            # 如果没有 last_view，直接渲染所有消息
-            rendered = []
             for m in messages:
-                rendered.append(await self.qq_chat.render_message(m))
-            return "".join(rendered)
-
-        # 首先分析消息的时间分布
-        has_older = False  # 是否有比 last_view 早的消息
-        has_newer = False  # 是否有比 last_view 晚的消息
-
-        for m in messages:
-            msg_time = m.get("time", 0)
-            if msg_time <= last_view:
-                has_older = True
-            else:
-                has_newer = True
-
-        rendered = []
-        inserted = False
-
-        # 情况1：全是比 last_view 新的消息
-        if has_newer and not has_older:
-            rendered.append("[更早的消息已经看不到了]\n")
-            for m in messages:
-                rendered.append(await self.qq_chat.render_message(m))
-
-        # 情况2：存在早的也存在晚的消息 - 在转变处插入
-        elif has_older and has_newer:
-            for m in messages:
-                msg_time = m.get("time", 0)
-                if not inserted and msg_time > last_view:
-                    rendered.append("\n[上次你看到了这里]\n")
-                    inserted = True
-                rendered.append(await self.qq_chat.render_message(m))
-
-        # 情况3：全是比 last_view 早的消息
-        elif has_older and not has_newer:
-            for m in messages:
-                rendered.append(await self.qq_chat.render_message(m))
-            rendered.append("\n[上次你看到了这里]\n")
-
-        # 如果没有消息，直接返回空
+                sender_name = m.get("sender", {}).get("nickname", "")
+                role = "assistant" if sender_name == my_name else "user"
+                content = await self.qq_chat.render_message(m)
+                raw_history_messages.append({"role": role, "content": content})
         else:
-            return ""
+            has_older = any(m.get("time", 0) <= last_view for m in messages)
+            has_newer = any(m.get("time", 0) > last_view for m in messages)
 
-        return "".join(rendered)
+            if has_newer and not has_older:
+                raw_history_messages.append(
+                    {"role": "user", "content": "[更早的消息已经看不到了]"}
+                )
+                for m in messages:
+                    sender_name = m.get("sender", {}).get("nickname", "")
+                    role = "assistant" if sender_name == my_name else "user"
+                    content = await self.qq_chat.render_message(m)
+                    raw_history_messages.append({"role": role, "content": content})
+
+            elif has_older and has_newer:
+                inserted = False
+                for m in messages:
+                    msg_time = m.get("time", 0)
+                    if not inserted and msg_time > last_view:
+                        raw_history_messages.append(
+                            {"role": "user", "content": "\n[上次你看到了这里]\n"}
+                        )
+                        inserted = True
+                    sender_name = m.get("sender", {}).get("nickname", "")
+                    role = "assistant" if sender_name == my_name else "user"
+                    content = await self.qq_chat.render_message(m)
+                    raw_history_messages.append({"role": role, "content": content})
+
+            elif has_older and not has_newer:
+                for m in messages:
+                    sender_name = m.get("sender", {}).get("nickname", "")
+                    role = "assistant" if sender_name == my_name else "user"
+                    content = await self.qq_chat.render_message(m)
+                    raw_history_messages.append({"role": role, "content": content})
+                raw_history_messages.append(
+                    {"role": "user", "content": "\n[上次你看到了这里]\n"}
+                )
+
+        history_as_messages = self._aggregate_user_messages(raw_history_messages)
+        final_messages.extend(history_as_messages)
+        final_messages.append({"role": "system", "content": suffix.strip()})
+        return final_messages
 
     def _get_idio_section(self) -> str:
         """获取习语部分"""
         idios = [p for i in AMADEUS_CONFIG.character.idiolect for p in i.prompts][::-1]
-        return "\n".join([f"- {i}" for i in idios]) if idios else ""
+        return "\n".join([f"- {i.strip()}" for i in idios]) if idios else ""
 
     def _build_prompt_template(
         self, my_name: str, groupcard: str, msgs: str, idio_section: str, intro: str
@@ -212,4 +239,3 @@ class ChatContext:
             self.qq_chat.send_message,
             self.qq_chat.ignore,
         ] + tools
-

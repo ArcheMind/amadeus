@@ -1,17 +1,18 @@
 from datetime import datetime
+from typing import List, Dict, Any
 from amadeus.config import AMADEUS_CONFIG
 from amadeus.tools.im import QQChat
 
 
 class ChatContext:
     """聊天上下文管理器，负责构建prompt和管理上下文"""
-    
+
     def __init__(self, chat_type: str, target_id: int, api_base: str):
         self.chat_type = chat_type
         self.target_id = target_id
         self.api_base = api_base
         self._qq_chat = None
-    
+
     @property
     def qq_chat(self) -> QQChat:
         """延迟初始化QQChat实例"""
@@ -22,8 +23,20 @@ class ChatContext:
                 target_id=self.target_id,
             )
         return self._qq_chat
-    
-    async def build_chat_prompt(self, from_message_id: int = 0, last_view: float = None) -> str:
+
+    async def build_chat_messages(
+        self, from_message_id: int = 0, last_view: float = None
+    ) -> List[Dict[str, Any]]:
+        """
+        构建聊天上下文的messages，格式为llm可直接使用.
+        注意：这是一个临时的实现，将整个prompt塞进了system message
+        """
+        prompt_string = await self.build_chat_prompt(from_message_id, last_view)
+        return [{"role": "system", "content": prompt_string}]
+
+    async def build_chat_prompt(
+        self, from_message_id: int = 0, last_view: float = None
+    ) -> str:
         """构建聊天上下文的prompt，支持last_view分割线"""
         my_name = (await self.qq_chat.client.get_login_info())["nickname"]
         messages = await self.qq_chat.client.get_chat_history(
@@ -37,7 +50,9 @@ class ChatContext:
         groupcard = await self.qq_chat.client.get_group_name(self.target_id)
         intro = AMADEUS_CONFIG.character.personality
         idio_section = self._get_idio_section()
-        return self._build_prompt_template(my_name, groupcard, msgs, idio_section, intro)
+        return self._build_prompt_template(
+            my_name, groupcard, msgs, idio_section, intro
+        )
 
     async def _render_msgs_with_last_view(self, messages, last_view):
         """渲染消息并插入分割线"""
@@ -47,27 +62,27 @@ class ChatContext:
             for m in messages:
                 rendered.append(await self.qq_chat.render_message(m))
             return "".join(rendered)
-        
+
         # 首先分析消息的时间分布
         has_older = False  # 是否有比 last_view 早的消息
         has_newer = False  # 是否有比 last_view 晚的消息
-        
+
         for m in messages:
             msg_time = m.get("time", 0)
             if msg_time <= last_view:
                 has_older = True
             else:
                 has_newer = True
-        
+
         rendered = []
         inserted = False
-        
+
         # 情况1：全是比 last_view 新的消息
         if has_newer and not has_older:
             rendered.append("[更早的消息已经看不到了]\n")
             for m in messages:
                 rendered.append(await self.qq_chat.render_message(m))
-        
+
         # 情况2：存在早的也存在晚的消息 - 在转变处插入
         elif has_older and has_newer:
             for m in messages:
@@ -76,26 +91,27 @@ class ChatContext:
                     rendered.append("\n[上次你看到了这里]\n")
                     inserted = True
                 rendered.append(await self.qq_chat.render_message(m))
-        
+
         # 情况3：全是比 last_view 早的消息
         elif has_older and not has_newer:
             for m in messages:
                 rendered.append(await self.qq_chat.render_message(m))
             rendered.append("\n[上次你看到了这里]\n")
-        
+
         # 如果没有消息，直接返回空
         else:
             return ""
-            
+
         return "".join(rendered)
 
     def _get_idio_section(self) -> str:
         """获取习语部分"""
         idios = [p for i in AMADEUS_CONFIG.character.idiolect for p in i.prompts][::-1]
         return "\n".join([f"- {i}" for i in idios]) if idios else ""
-    
-    def _build_prompt_template(self, my_name: str, groupcard: str, msgs: str, 
-                             idio_section: str, intro: str) -> str:
+
+    def _build_prompt_template(
+        self, my_name: str, groupcard: str, msgs: str, idio_section: str, intro: str
+    ) -> str:
         """构建prompt模板"""
         return f"""
 {intro}
@@ -173,32 +189,27 @@ class ChatContext:
 请仔细阅读当前群聊内容，分析讨论话题和群成员关系，分析你刚刚发言和别人对你的发言的反应，思考你自身的目的。然后思考你是否需要使用工具。思考并输出你的内心想法
 输出要求：
 {idio_section}
-- 你理解meme是发送者用来辅助表达的，避免评论其内容，而是关注发送者的意图
-- [important] 看到这儿时你当下的感受和想法
 - 如果还有未关闭的话题链等着你回复(比如at了你)，你应该回复，避免由你结束一个话题链
 
 
 接下来，你：
-1. 先输出(格式参考上述yaml)
+1. 先输出(格式严格遵循上述yaml)
 2. 如需行动，使用工具
 """
-    
+
     def get_tools(self):
         """获取可用的工具列表"""
         from amadeus.config import AMADEUS_CONFIG
-        
+
         TOOL_MAP = {
             "撤回消息": self.qq_chat.delete_message,
             "群管理-禁言": self.qq_chat.set_group_ban,
         }
 
-        tools = [
-            TOOL_MAP[t]
-            for t in AMADEUS_CONFIG.enabled_tools
-            if t in TOOL_MAP
-        ]
-        
+        tools = [TOOL_MAP[t] for t in AMADEUS_CONFIG.enabled_tools if t in TOOL_MAP]
+
         return [
             self.qq_chat.send_message,
             self.qq_chat.ignore,
-        ] + tools 
+        ] + tools
+

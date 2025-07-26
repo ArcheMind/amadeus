@@ -43,21 +43,16 @@ async def user_loop():
                 )
                 
                 logger.trace(f"Building chat context for {green(chat_type)} {blue(target_id)}")
-                content = await chat_context.build_chat_prompt(last_view=state.last_view)
+                messages = await chat_context.build_chat_messages(last_view=state.last_view)
                 state.last_view = state.next_view
 
                 tools = chat_context.get_tools()
                 
                 logger.info(f"Calling LLM for target: {green(chat_type)} {blue(target_id)} with {len(tools)} tools.")
-                logger.info(f"LLM input:\n{content}")
+                logger.info(f"LLM input messages:\n{messages}")
 
                 async for m in llm(
-                    [
-                        {
-                            "role": "user",
-                            "content": content,
-                        }
-                    ],
+                    messages,
                     tools=tools,
                     continue_on_tool_call=False,
                     temperature=1,

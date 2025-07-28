@@ -1,8 +1,15 @@
 from datetime import datetime
 from typing import List, Dict, Any
+import lmdb
+import os
+from amadeus.const import DATA_DIR
+from amadeus.kvdb import KVModel
 from amadeus.config import AMADEUS_CONFIG
 from amadeus.tools.im import QQChat
 from loguru import logger
+
+
+db_env = lmdb.open(os.path.join(DATA_DIR, "thinking.mdb"), map_size=100 * 1024**2)
 
 
 class ChatContext:
@@ -69,6 +76,7 @@ class ChatContext:
 
         groupcard = await self.qq_chat.client.get_group_name(self.target_id)
         intro = AMADEUS_CONFIG.character.personality
+
         idio_section = self._get_idio_section()
 
         placeholder = "%%MSGS%%"
@@ -92,9 +100,14 @@ class ChatContext:
             has_older = any(m.get("time", 0) <= last_view for m in messages)
             has_newer = any(m.get("time", 0) > last_view for m in messages)
 
+            thinking_db = KVModel(
+                db_env, namespace=f"{self.chat_type}_{self.target_id}", kind="thinking"
+            )
+            last_thought = thinking_db.get("last_thought")
+
             if has_newer and not has_older:
                 raw_history_messages.append(
-                    {"role": "user", "content": "[更早的消息已经看不到了]"}
+                    {"role": "assistant", "content": "[更早的消息已经看不到了]"}
                 )
                 for m in messages:
                     sender_name = m.get("sender", {}).get("nickname", "")
@@ -108,7 +121,10 @@ class ChatContext:
                     msg_time = m.get("time", 0)
                     if not inserted and msg_time > last_view:
                         raw_history_messages.append(
-                            {"role": "user", "content": "\n[上次你看到了这里]\n"}
+                            {
+                                "role": "assistant",
+                                "content": f"\n[上次你看到了这里]\n{last_thought or ''}\n",
+                            }
                         )
                         inserted = True
                     sender_name = m.get("sender", {}).get("nickname", "")
@@ -123,7 +139,10 @@ class ChatContext:
                     content = await self.qq_chat.render_message(m)
                     raw_history_messages.append({"role": role, "content": content})
                 raw_history_messages.append(
-                    {"role": "user", "content": "\n[上次你看到了这里]\n"}
+                    {
+                        "role": "assistant",
+                        "content": f"\n[上次你看到了这里]\n{last_thought or ''}\n",
+                    }
                 )
 
         history_as_messages = self._aggregate_user_messages(raw_history_messages)
@@ -152,8 +171,8 @@ class ChatContext:
 
 平时，你会先从每个人的角度出发，从群聊混乱的对话中提取出话题链输出；对于暂时不确定不理解的消息，保持谨慎，避免随便下结论。
 例如:
-```yaml
-看消息后的情绪：chill
+``` yaml
+情绪：chill
 话题链:
 -
     逻辑:
@@ -213,14 +232,12 @@ class ChatContext:
 [没有更新的消息]
 ```
 
-请仔细阅读当前群聊内容，分析讨论话题和群成员关系，分析你刚刚发言和别人对你的发言的反应，思考你自身的目的。然后思考你是否需要使用工具。思考并输出你的内心想法
-输出要求：
+你通常的说话风格：
 {idio_section}
-- 如果还有未关闭的话题链等着你回复(比如at了你)，你应该回复，避免由你结束一个话题链
 
 
 接下来，你：
-1. 先输出(格式严格遵循上述yaml)
+1. 先输出(格式严格遵循yaml示例)
 2. 如需行动，使用工具
 """
 

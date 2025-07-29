@@ -7,7 +7,7 @@ from amadeus.const import DATA_DIR
 from amadeus.kvdb import KVModel
 from amadeus.common import gray, green, blue, red, yellow
 from amadeus.llm import llm
-from amadeus.tools.context import ChatContext
+from amadeus.context import ChatContext
 from amadeus.config import AMADEUS_CONFIG
 from loguru import logger
 

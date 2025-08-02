@@ -84,7 +84,8 @@ class ChatContext:
 
         # Use a deque to efficiently keep the last 8 messages
         latest_messages_deque = collections.deque(
-            (msg for _, msg in message_iterator), maxlen=8
+            (msg for _, msg in message_iterator),
+            maxlen=12,
         )
         messages = list(latest_messages_deque)
 
@@ -252,8 +253,8 @@ class ChatContext:
 
 
 接下来，你：
-1. 先输出(格式严格遵循yaml示例)
-2. 如需行动，使用工具
+1. 先输出思考(格式严格遵循yaml示例)
+2. 然后，如需行动，调用 tool
 """
 
     def get_tools(self):

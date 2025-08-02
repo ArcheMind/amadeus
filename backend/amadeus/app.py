@@ -1,4 +1,5 @@
 import time
+import uuid
 import collections
 import asyncio
 import lmdb
@@ -12,7 +13,7 @@ from amadeus.config import AMADEUS_CONFIG
 from loguru import logger
 
 
-db_env = lmdb.open(os.path.join(DATA_DIR, "thinking.mdb"), map_size=100 * 1024**2)
+db_env = lmdb.open(os.path.join(DATA_DIR, "store.mdb"), map_size=100 * 1024**2)
 
 
 TARGETS = set()
@@ -47,6 +48,7 @@ async def user_loop():
                     chat_type=chat_type,
                     target_id=target_id,
                     api_base=AMADEUS_CONFIG.onebot_server,
+                    db_env=db_env,
                 )
 
                 logger.trace(
@@ -97,19 +99,7 @@ async def user_loop():
                 )
         except Exception as e:
             logger.error(f"Error in user_loop: {red(str(e))}")
-            pass
-
-
-USER_BLACKLIST = set(
-    [
-        3288903870,
-        3694691673,
-        3877042072,
-        3853260942,
-        3858404312,
-        2224638710,
-    ]
-)
+            logger.exception(e)
 
 
 async def user_blacklist(json_body):
@@ -117,29 +107,30 @@ async def user_blacklist(json_body):
         return True
 
 
-TARGET_WHITELIST = set(
-    [
-        119851258,
-        # 829109637,  # 卅酱群
-        # 608533421,  # key
-        980036058,  # 小琪
-        # 773891671,  # 暗CLub
-        904631854,  # tama木花
-        697273289,  # 开放墨蓝
-        # 959357003,  # 鸥群
-        692484740,  # 新玩家群
-    ]
-)
+async def group_whitelist(json_body):
+    if (
+        not json_body.get("group_id")
+        and str(json_body.get("group_id")) not in AMADEUS_CONFIG.enabled_groups
+    ):
+        return True
+
+
+async def post_type_whitelist(json_body):
+    if json_body.get("post_type") not in ["message", "notice"]:
+        return True
 
 
 async def group_whitelist(json_body):
+    if json_body.get("group_id") is None:
+        return False
     if str(json_body.get("group_id")) not in AMADEUS_CONFIG.enabled_groups:
         return True
 
 
 MIDDLEWARES = [
+    post_type_whitelist,
     group_whitelist,
-    user_blacklist,
+    # user_blacklist,
 ]
 
 
@@ -155,8 +146,8 @@ async def message_handler(data):
     """
     返回 True 表示消息被处理，False 表示消息被忽略
     """
-    if data.get("post_type") != "message":
-        return False
+    # if data.get("post_type") != "message":
+    #     return False
 
     # 检查中间件
     json_body = data
@@ -176,7 +167,22 @@ async def message_handler(data):
         target_type = "group"
     else:
         target_type = "private"
+    # logger.info(green(str(json_body)))
     target_id = json_body.get("group_id", 0) or json_body.get("user_id", 0)
+
+    message_id = json_body.get("message_id")
+    if not message_id:
+        message_id = int.from_bytes(uuid.uuid4().bytes[:4], byteorder="big")
+        json_body["message_id"] = message_id
+
+    message_record_db = KVModel(
+        db_env,
+        namespace=f"{target_type}_{target_id}",
+        kind="message_record",
+        extra_index=["time"],
+    )
+    message_record_db.put(str(message_id), json_body)
+
     msg_time = json_body.get("time", 0)
     if msg_time:
         logger.trace(

@@ -1,9 +1,11 @@
 from typing import Literal
 import yaml
+import time
 from amadeus.common import format_timestamp
 from amadeus.executors.im import InstantMessagingClient
 from amadeus.llm import auto_tool_spec
 from amadeus.image import analyze_image, search_meme
+from amadeus.kvdb import KVModel
 from loguru import logger
 
 from bs4 import BeautifulSoup
@@ -19,6 +21,7 @@ def parse_xml_element(text):
             return None
     except Exception as e:
         from loguru import logger
+
         logger.debug(f"Failed to parse XML element from text: {e}")
         return None
 
@@ -29,10 +32,12 @@ class QQChat:
         api_base,
         chat_type: Literal["group", "private"],
         target_id: int,
+        db_env,
     ):
         self.client = InstantMessagingClient(api_base)
         self.chat_type = chat_type
         self.target_id = target_id
+        self.db_env = db_env
 
     @auto_tool_spec(
         name="reply",
@@ -75,18 +80,62 @@ class QQChat:
                 },
             )
 
+        sent_message_info = None
         if self.chat_type == "group":
-            await self.client.send_message(
+            sent_message_info = await self.client.send_message(
                 message_body,
                 "group",
                 self.target_id,
             )
         elif self.chat_type == "private":
-            await self.client.send_message(
+            sent_message_info = await self.client.send_message(
                 message_body,
                 "private",
                 self.target_id,
             )
+
+        if not sent_message_info or not sent_message_info.get("message_id"):
+            logger.error("Failed to send message or get message_id")
+            return False
+
+        # Store the sent message to db to fix the echo problem
+        message_id = sent_message_info.get("message_id")
+        login_info = await self.client.get_login_info()
+        bot_id = login_info.get("user_id")
+        bot_nickname = login_info.get("nickname")
+
+        own_message = {
+            "post_type": "message",
+            "message_type": self.chat_type,
+            "self_id": bot_id,
+            "user_id": bot_id,
+            "sender": {
+                "user_id": bot_id,
+                "nickname": bot_nickname,
+                "card": bot_nickname,
+            },
+            "message": message_body,
+            "raw_message": text,
+            "time": int(time.time()),
+            "message_id": message_id,
+            "font": 0,
+        }
+
+        if self.chat_type == "group":
+            own_message["group_id"] = self.target_id
+            own_message["sub_type"] = "normal"
+        elif self.chat_type == "private":
+            own_message["sub_type"] = "friend"
+
+        message_record_db = KVModel(
+            self.db_env,
+            namespace=f"{self.chat_type}_{self.target_id}",
+            kind="message_record",
+            extra_index=["time"],
+        )
+        message_record_db.put(str(message_id), own_message)
+        logger.info(f"Stored own message {message_id} to db")
+
         return True
 
     @auto_tool_spec(
@@ -119,8 +168,6 @@ class QQChat:
     )
     async def delete_message(self, message_id: int):
         return await self.client.delete_message(message_id)
-
-
 
     async def get_usercard(self, user_id: int):
         self_id = (await self.client.get_login_info())["user_id"]
@@ -169,7 +216,7 @@ class QQChat:
         time = data.get("time", 0)
         if data.get("post_type") == "notice":
             if data.get("notice_type") == "notify":
-                noticer = await self.get_usercard(sender["user_id"])
+                noticer = await self.get_usercard(data["user_id"])
                 assert data.get("target_id"), yaml.dump(data)
                 noticee = await self.get_usercard(data["target_id"])
                 action1 = data["raw_info"][2]["txt"]
@@ -185,7 +232,7 @@ class QQChat:
 [{action1} {noticee}]
 """
             elif data.get("notice_type") == "group_recall":
-                user = await self.get_usercard(sender["user_id"])
+                user = await self.get_usercard(data["user_id"])
                 return f"""
 {user} {format_timestamp(time)}
 [撤回消息]

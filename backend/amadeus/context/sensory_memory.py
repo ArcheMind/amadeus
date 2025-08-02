@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List, Dict, Any
 import lmdb
 import os
+import collections
 from amadeus.const import DATA_DIR
 from amadeus.kvdb import KVModel
 from amadeus.config import AMADEUS_CONFIG
@@ -15,10 +16,11 @@ db_env = lmdb.open(os.path.join(DATA_DIR, "thinking.mdb"), map_size=100 * 1024**
 class ChatContext:
     """聊天上下文管理器，负责构建prompt和管理上下文"""
 
-    def __init__(self, chat_type: str, target_id: int, api_base: str):
+    def __init__(self, chat_type: str, target_id: int, api_base: str, db_env):
         self.chat_type = chat_type
         self.target_id = target_id
         self.api_base = api_base
+        self.db_env = db_env
         self._qq_chat = None
 
     @property
@@ -29,6 +31,7 @@ class ChatContext:
                 api_base=self.api_base,
                 chat_type=self.chat_type,
                 target_id=self.target_id,
+                db_env=self.db_env,
             )
         return self._qq_chat
 
@@ -61,18 +64,29 @@ class ChatContext:
         return aggregated
 
     async def build_chat_messages(
-        self, from_message_id: int = 0, last_view: float = None
+        self, last_view: float = None
     ) -> List[Dict[str, Any]]:
         """
         构建聊天上下文的messages，格式为llm可直接使用.
         """
         my_name = (await self.qq_chat.client.get_login_info())["nickname"]
-        messages = await self.qq_chat.client.get_chat_history(
-            self.chat_type,
-            self.target_id,
-            from_message_id,
-            count=8,
+
+        message_record_db = KVModel(
+            self.db_env,
+            namespace=f"{self.chat_type}_{self.target_id}",
+            kind="message_record",
+            extra_index=["time"],
         )
+
+        message_iterator = message_record_db.iter_by(
+            "time", 0, datetime.now().timestamp()
+        )
+
+        # Use a deque to efficiently keep the last 8 messages
+        latest_messages_deque = collections.deque(
+            (msg for _, msg in message_iterator), maxlen=8
+        )
+        messages = list(latest_messages_deque)
 
         groupcard = await self.qq_chat.client.get_group_name(self.target_id)
         intro = AMADEUS_CONFIG.character.personality
@@ -103,7 +117,8 @@ class ChatContext:
             thinking_db = KVModel(
                 db_env, namespace=f"{self.chat_type}_{self.target_id}", kind="thinking"
             )
-            last_thought = thinking_db.get("last_thought")
+            # last_thought = thinking_db.get("last_thought")
+            last_thought = ""
 
             if has_newer and not has_older:
                 raw_history_messages.append(
@@ -229,7 +244,7 @@ class ChatContext:
 ```
 {msgs}
 
-[没有更新的消息]
+[到底了]
 ```
 
 你通常的说话风格：

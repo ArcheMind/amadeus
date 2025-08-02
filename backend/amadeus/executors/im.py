@@ -4,6 +4,9 @@ import abc
 from loguru import logger
 import uuid
 import asyncio
+import time
+from amadeus.tools.context import get_tool_context
+from amadeus.kvdb import KVModel
 import json
 
 import httpx
@@ -55,16 +58,17 @@ class WsConnector:
     async def start(self):
         self._is_running = True
         logger.debug(f"Attempting to connect to WebSocket at {green(self.uri)}")
-        
+
         # Extract host and port for pre-connection check
         import re
         import socket
-        host_port_match = re.search(r'://([^:/]+):(\d+)', self.uri)
+
+        host_port_match = re.search(r"://([^:/]+):(\d+)", self.uri)
         if host_port_match:
             host = host_port_match.group(1)
             port = int(host_port_match.group(2))
             logger.debug(f"Checking if port {port} is open on {host}")
-            
+
             # Quick TCP connection check with reduced timeout
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -73,16 +77,16 @@ class WsConnector:
                 sock.close()
             except Exception as e:
                 logger.warning(f"Failed to check port {port}: {e}")
-        
+
         try:
             async with self._connect_lock:
                 port = host_port_match.group(2) if host_port_match else "unknown"
                 logger.debug(f"Trying to establish WebSocket connection to port {port}")
-                
+
                 # Add timeout to WebSocket connection
                 self._conn = await asyncio.wait_for(
-                    websockets.connect(self.uri), 
-                    timeout=2.0  # 2 seconds timeout for WebSocket connection
+                    websockets.connect(self.uri),
+                    timeout=2.0,  # 2 seconds timeout for WebSocket connection
                 )
                 logger.info(
                     f"Successfully connected to WebSocket server at {green(self.uri)}"
@@ -105,7 +109,9 @@ class WsConnector:
 
     async def join(self):
         if self._listen_task:
-            logger.debug(f"Waiting for WebSocket listen task to complete for {green(self.uri)}")
+            logger.debug(
+                f"Waiting for WebSocket listen task to complete for {green(self.uri)}"
+            )
             await self._listen_task
             logger.debug(f"WebSocket listen task completed for {green(self.uri)}")
         else:
@@ -131,7 +137,6 @@ class WsConnector:
                     f"WebSocket connection to {self.uri} is not established."
                 )
 
-
         await self._conn.send(json.dumps(data, ensure_ascii=False))
         logger.trace(
             f"Sent message: {yellow(json.dumps(data, indent=2, ensure_ascii=False))}"
@@ -155,7 +160,7 @@ class InstantMessagingClient:
     def __init__(self, api_base: str):
         if getattr(self, "_initialized", False):
             return
-        
+
         self.api_base = api_base
         if api_base.startswith("ws://") or api_base.startswith("wss://"):
             self._ws_connector: WsConnector = WsConnector(api_base)
@@ -168,8 +173,10 @@ class InstantMessagingClient:
             logger.debug(f"Starting WebSocket connection to {green(self.api_base)}")
             success = await self._ws_connector.start()
             if not success:
-                raise RuntimeError(f"WebSocket connection to {self.api_base} is not established.")
-            
+                raise RuntimeError(
+                    f"WebSocket connection to {self.api_base} is not established."
+                )
+
             self._ws_connector.register_event_handler(self._response_handler)
             self._is_listener_running = True
             logger.info(f"IM client listener started for {green(self.api_base)}")
@@ -227,21 +234,29 @@ class InstantMessagingClient:
 
     async def get_joined_groups(self):
         logger.debug(f"Starting to get joined groups from {green(self.api_base)}")
-        
+
         # Check if WebSocket connection is ready
         if not self._is_listener_running:
-            logger.debug(f"WebSocket listener not running, attempting to start for {green(self.api_base)}")
-        
+            logger.debug(
+                f"WebSocket listener not running, attempting to start for {green(self.api_base)}"
+            )
+
         try:
             response = await self._send_request(action="get_group_list", params={})
-            logger.debug(f"Received response from {green(self.api_base)}: status={response.get('status') if response else 'None'}")
-            
+            logger.debug(
+                f"Received response from {green(self.api_base)}: status={response.get('status') if response else 'None'}"
+            )
+
             if not (response and response.get("status") == "ok"):
-                logger.warning(f"Failed to get groups from {green(self.api_base)}: {response}")
+                logger.warning(
+                    f"Failed to get groups from {green(self.api_base)}: {response}"
+                )
                 return []
-            
+
             groups = response.get("data", [])
-            logger.debug(f"Successfully got {len(groups)} groups from {green(self.api_base)}")
+            logger.debug(
+                f"Successfully got {len(groups)} groups from {green(self.api_base)}"
+            )
             return groups
         except Exception as e:
             raise
@@ -308,8 +323,44 @@ class InstantMessagingClient:
             return None
 
         response = await self._send_request(action, params)
+        sent_message_info = response.get("data", {})
 
-        if response and response.get("status") == "ok":
+        if response and response.get("status") == "ok" and sent_message_info:
+            # Store the sent message to db to fix the echo problem
+            message_id = sent_message_info.get("message_id")
+            login_info = await self.get_login_info()
+            bot_id = login_info.get("user_id")
+            bot_nickname = login_info.get("nickname")
+            last_view_time = get_tool_context().get("last_view", time.time())
+
+            own_message = {
+                "post_type": "message",
+                "message_type": target_type,
+                "sender": {
+                    "user_id": bot_id,
+                    "nickname": bot_nickname,
+                    "card": bot_nickname,
+                },
+                "message": message,
+                "time": int(last_view_time),
+                "message_id": message_id,
+                "font": 0,
+            }
+
+            if target_type == "group":
+                own_message["group_id"] = target_id
+                own_message["sub_type"] = "normal"
+            elif target_type == "private":
+                own_message["user_id"] = target_id
+                own_message["sub_type"] = "friend"
+
+            message_record_db = KVModel(
+                self.db_env,
+                namespace=f"{target_type}_{target_id}",
+                kind="message_record",
+                extra_index=["time"],
+            )
+            message_record_db.put(str(message_id), own_message)
             return response.get("data")
         else:
             return None
@@ -412,5 +463,5 @@ class QQChat:
                 )
             timestamp = msg.get("time", 0)
             dt = format_timestamp(timestamp)
-            res += f'{name} {gray(dt)}:\n  {msg["raw_message"]}\n'
+            res += f"{name} {gray(dt)}:\n  {msg['raw_message']}\n"
         return res

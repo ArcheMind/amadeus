@@ -1,7 +1,7 @@
 {
   "name": "amadeus",
   "private": true,
-  "version": "0.0.26",
+  "version": "0.0.32",
   "type": "module",
   "main": "electron/main.cjs",
   "description": "开源聊天机器人框架",

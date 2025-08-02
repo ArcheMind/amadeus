@@ -67,7 +67,9 @@ async def user_loop():
                 )
 
                 llm_output_chunks = []
-                with set_tool_context(dict(last_view=state.last_view)):
+                with set_tool_context(
+                    dict(last_view=state.last_view, chat_context=chat_context)
+                ):
                     async for m in llm(
                         messages,
                         tools=tools,

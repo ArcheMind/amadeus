@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import lmdb
 import os
 import collections
@@ -7,31 +7,51 @@ from amadeus.const import DATA_DIR
 from amadeus.kvdb import KVModel
 from amadeus.config import AMADEUS_CONFIG
 from amadeus.tools.im import QQChat
+from amadeus.tools.dish import get_random_dish
+from amadeus.executors.im import InstantMessagingClient
 from loguru import logger
 
-
+# This db_env is for storing 'thinking' processes, separate from message history.
 db_env = lmdb.open(os.path.join(DATA_DIR, "thinking.mdb"), map_size=100 * 1024**2)
 
 
 class ChatContext:
     """聊天上下文管理器，负责构建prompt和管理上下文"""
 
-    def __init__(self, chat_type: str, target_id: int, api_base: str, db_env):
+    def __init__(self, chat_type: str, target_id: int, api_base: str):
         self.chat_type = chat_type
         self.target_id = target_id
         self.api_base = api_base
-        self.db_env = db_env
-        self._qq_chat = None
+        self.client = InstantMessagingClient(api_base)
 
-    @property
-    def qq_chat(self) -> QQChat:
-        """延迟初始化QQChat实例"""
+        self._qq_chat: Optional[QQChat] = None
+        self._self_id: Optional[int] = None
+        self._my_name: Optional[str] = None
+
+    async def _initialize_bot_info(self):
+        """Initializes self_id and my_name if not already done."""
+        if self._self_id is None or self._my_name is None:
+            try:
+                info = await self.client.get_login_info()
+                self._self_id = info["user_id"]
+                self._my_name = info["nickname"]
+            except Exception as e:
+                logger.error(f"Failed to get login info: {e}")
+                self._self_id = -1
+                self._my_name = "Amadeus"
+
+    async def ensure_qq_chat_instance(self) -> QQChat:
+        """
+        Ensures the QQChat instance is created, returning it.
+        This should be called before accessing get_tools or build_chat_messages.
+        """
+        await self._initialize_bot_info()
         if self._qq_chat is None:
             self._qq_chat = QQChat(
                 api_base=self.api_base,
+                self_id=self._self_id,
                 chat_type=self.chat_type,
                 target_id=self.target_id,
-                db_env=self.db_env,
             )
         return self._qq_chat
 
@@ -44,7 +64,6 @@ class ChatContext:
 
         aggregated = []
         for msg in messages:
-            # 特殊标记不参与聚合
             content = msg.get("content", "")
             is_special_marker = (
                 "[上次你看到了这里]" in content or "[更早的消息已经看不到了]" in content
@@ -58,7 +77,7 @@ class ChatContext:
                 and "[上次你看到了这里]" not in aggregated[-1].get("content", "")
                 and "[更早的消息已经看不到了]" not in aggregated[-1].get("content", "")
             ):
-                aggregated[-1]["content"] += f"{content}"
+                aggregated[-1]["content"] += f"\n{content}"
             else:
                 aggregated.append(msg.copy())
         return aggregated
@@ -69,47 +88,36 @@ class ChatContext:
         """
         构建聊天上下文的messages，格式为llm可直接使用.
         """
-        my_name = (await self.qq_chat.client.get_login_info())["nickname"]
+        qq_chat_instance = await self.ensure_qq_chat_instance()
 
-        message_record_db = KVModel(
-            self.db_env,
-            namespace=f"{self.chat_type}_{self.target_id}",
-            kind="message_record",
-            extra_index=["time"],
+        messages = qq_chat_instance.get_history(limit=12)
+
+        groupcard = (
+            await qq_chat_instance.client.get_group_name(self.target_id)
+            if self.chat_type == "group"
+            else "私聊"
         )
-
-        message_iterator = message_record_db.iter_by(
-            "time", 0, datetime.now().timestamp()
-        )
-
-        # Use a deque to efficiently keep the last 8 messages
-        latest_messages_deque = collections.deque(
-            (msg for _, msg in message_iterator),
-            maxlen=12,
-        )
-        messages = list(latest_messages_deque)
-
-        groupcard = await self.qq_chat.client.get_group_name(self.target_id)
         intro = AMADEUS_CONFIG.character.personality
-
         idio_section = self._get_idio_section()
 
         placeholder = "%%MSGS%%"
         prompt_shell = self._build_prompt_template(
-            my_name, groupcard, placeholder, idio_section, intro
+            self._my_name, groupcard, placeholder, idio_section, intro
         )
 
         prefix, suffix = prompt_shell.split(placeholder)
 
         final_messages = [{"role": "system", "content": prefix.strip()}]
-
         raw_history_messages = []
 
         if last_view is None:
             for m in messages:
-                sender_name = m.get("sender", {}).get("nickname", "")
-                role = "assistant" if sender_name == my_name else "user"
-                content = await self.qq_chat.render_message(m)
+                role = (
+                    "assistant"
+                    if m.get("sender", {}).get("user_id") == self._self_id
+                    else "user"
+                )
+                content = await qq_chat_instance.render_message(m)
                 raw_history_messages.append({"role": role, "content": content})
         else:
             has_older = any(m.get("time", 0) <= last_view for m in messages)
@@ -118,17 +126,19 @@ class ChatContext:
             thinking_db = KVModel(
                 db_env, namespace=f"{self.chat_type}_{self.target_id}", kind="thinking"
             )
-            # last_thought = thinking_db.get("last_thought")
-            last_thought = ""
+            last_thought = thinking_db.get("last_thought") or ""
 
             if has_newer and not has_older:
                 raw_history_messages.append(
                     {"role": "assistant", "content": "[更早的消息已经看不到了]"}
                 )
                 for m in messages:
-                    sender_name = m.get("sender", {}).get("nickname", "")
-                    role = "assistant" if sender_name == my_name else "user"
-                    content = await self.qq_chat.render_message(m)
+                    role = (
+                        "assistant"
+                        if m.get("sender", {}).get("user_id") == self._self_id
+                        else "user"
+                    )
+                    content = await qq_chat_instance.render_message(m)
                     raw_history_messages.append({"role": role, "content": content})
 
             elif has_older and has_newer:
@@ -139,25 +149,31 @@ class ChatContext:
                         raw_history_messages.append(
                             {
                                 "role": "assistant",
-                                "content": f"\n[上次你看到了这里]\n{last_thought or ''}\n",
+                                "content": f"\n[上次你看到了这里]\n{last_thought}\n",
                             }
                         )
                         inserted = True
-                    sender_name = m.get("sender", {}).get("nickname", "")
-                    role = "assistant" if sender_name == my_name else "user"
-                    content = await self.qq_chat.render_message(m)
+                    role = (
+                        "assistant"
+                        if m.get("sender", {}).get("user_id") == self._self_id
+                        else "user"
+                    )
+                    content = await qq_chat_instance.render_message(m)
                     raw_history_messages.append({"role": role, "content": content})
 
             elif has_older and not has_newer:
                 for m in messages:
-                    sender_name = m.get("sender", {}).get("nickname", "")
-                    role = "assistant" if sender_name == my_name else "user"
-                    content = await self.qq_chat.render_message(m)
+                    role = (
+                        "assistant"
+                        if m.get("sender", {}).get("user_id") == self._self_id
+                        else "user"
+                    )
+                    content = await qq_chat_instance.render_message(m)
                     raw_history_messages.append({"role": role, "content": content})
                 raw_history_messages.append(
                     {
                         "role": "assistant",
-                        "content": f"\n[上次你看到了这里]\n{last_thought or ''}\n",
+                        "content": f"\n[上次你看到了这里]\n{last_thought}\n",
                     }
                 )
 
@@ -253,22 +269,31 @@ class ChatContext:
 
 
 接下来，你：
-1. 先输出思考(格式严格遵循yaml示例)
-2. 然后，如需行动，调用 tool
+1. 一定会先输出思考(格式严格遵循yaml示例)
+2. 然后，如需行动，一定会调用工具
 """
 
-    def get_tools(self):
-        """获取可用的工具列表"""
+    def get_tools(self) -> list:
+        """
+        获取可用的工具列表.
+        前提: ensure_qq_chat_instance() 必须先被调用.
+        """
+        if self._qq_chat is None:
+            raise RuntimeError(
+                "QQChat instance has not been initialized. Call ensure_qq_chat_instance() first."
+            )
+
         from amadeus.config import AMADEUS_CONFIG
 
         TOOL_MAP = {
-            "撤回消息": self.qq_chat.delete_message,
-            "群管理-禁言": self.qq_chat.set_group_ban,
+            "撤回消息": self._qq_chat.delete_message,
+            "群管理-禁言": self._qq_chat.set_group_ban,
+            "互动-点菜": get_random_dish,
         }
 
         tools = [TOOL_MAP[t] for t in AMADEUS_CONFIG.enabled_tools if t in TOOL_MAP]
 
         return [
-            self.qq_chat.send_message,
-            self.qq_chat.ignore,
+            self._qq_chat.send_message,
+            self._qq_chat.ignore,
         ] + tools

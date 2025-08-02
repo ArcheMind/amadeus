@@ -68,6 +68,7 @@ apps:
         suggestions:
           - 撤回消息
           - 群管理-禁言
+          - 互动-点菜
     required:
     - name
     type: object
@@ -349,5 +350,5 @@ idiolects:
 
 
 EXAMPLE_CONFIG = yaml.safe_load(EXAMPLE_CONFIG_YAML)
-CONFIG_SCHEMA_YAML = CONFIG_SCHEMA_YAML.replace('__VERSION__', APP_VERSION)
+CONFIG_SCHEMA_YAML = CONFIG_SCHEMA_YAML.replace("__VERSION__", APP_VERSION)
 CONFIG_SCHEMA = yaml.safe_load(CONFIG_SCHEMA_YAML)

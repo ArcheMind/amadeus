@@ -12,8 +12,10 @@ from amadeus.llm import llm
 from amadeus.context import ChatContext
 from amadeus.config import AMADEUS_CONFIG
 from loguru import logger
+from amadeus.tools.im import QQChat
+from amadeus.executors.im import InstantMessagingClient, WsConnector
 
-
+# This global db_env is now only for 'thinking' and other potential global stores, not messages.
 db_env = lmdb.open(os.path.join(DATA_DIR, "store.mdb"), map_size=100 * 1024**2)
 
 
@@ -44,13 +46,14 @@ async def user_loop():
                     f"Processing event for target: {green(chat_type)} {blue(target_id)}"
                 )
 
-                # 使用ChatContext架构：user_loop -> context -> tools
                 chat_context = ChatContext(
                     chat_type=chat_type,
                     target_id=target_id,
                     api_base=AMADEUS_CONFIG.onebot_server,
-                    db_env=db_env,
                 )
+                
+                # Ensure the QQChat instance and bot info are loaded before proceeding
+                await chat_context.ensure_qq_chat_instance()
 
                 logger.trace(
                     f"Building chat context for {green(chat_type)} {blue(target_id)}"
@@ -60,6 +63,7 @@ async def user_loop():
                 )
                 state.last_view = state.next_view
 
+                # get_tools is now a sync method, call it after ensuring instance exists
                 tools = chat_context.get_tools()
 
                 logger.info(
@@ -139,21 +143,30 @@ MIDDLEWARES = [
 
 
 _TASKS = {}
+_SELF_ID = None
 
 DAEMONS = [user_loop]
 
 
-from amadeus.executors.im import WsConnector
+async def get_self_id():
+    """Get and cache the bot's self_id."""
+    global _SELF_ID
+    if _SELF_ID is None:
+        client = InstantMessagingClient(AMADEUS_CONFIG.onebot_server)
+        try:
+            info = await client.get_login_info()
+            _SELF_ID = info["user_id"]
+            logger.info(f"Successfully retrieved self_id: {blue(_SELF_ID)}")
+        except Exception as e:
+            logger.error(f"Failed to get self_id: {e}. Will retry.")
+            _SELF_ID = None # Reset on failure to allow retry
+    return _SELF_ID
 
 
 async def message_handler(data):
     """
-    返回 True 表示消息被处理，False 表示消息被忽略
+    Returns True if the message is processed, False otherwise.
     """
-    # if data.get("post_type") != "message":
-    #     return False
-
-    # 检查中间件
     json_body = data
     middleware_blocked = False
     for middleware in MIDDLEWARES:
@@ -169,23 +182,34 @@ async def message_handler(data):
 
     if json_body.get("group_id"):
         target_type = "group"
+        target_id = json_body.get("group_id")
     else:
         target_type = "private"
-    # logger.info(green(str(json_body)))
-    target_id = json_body.get("group_id", 0) or json_body.get("user_id", 0)
+        target_id = json_body.get("user_id")
+
+    if not target_id:
+        logger.warning(f"Could not determine target_id for message: {json_body}")
+        return False
 
     message_id = json_body.get("message_id")
     if not message_id:
         message_id = int.from_bytes(uuid.uuid4().bytes[:4], byteorder="big")
         json_body["message_id"] = message_id
 
-    message_record_db = KVModel(
-        db_env,
-        namespace=f"{target_type}_{target_id}",
-        kind="message_record",
-        extra_index=["time"],
+    # Get self_id to correctly instantiate QQChat
+    self_id = await get_self_id()
+    if not self_id:
+        logger.error("Could not get self_id, unable to save message.")
+        return False
+
+    # Instantiate QQChat to handle its own database
+    qq_chat_instance = QQChat(
+        api_base=AMADEUS_CONFIG.onebot_server,
+        self_id=self_id,
+        chat_type=target_type,
+        target_id=target_id,
     )
-    message_record_db.put(str(message_id), json_body)
+    qq_chat_instance.save_message(json_body)
 
     msg_time = json_body.get("time", 0)
     if msg_time:
@@ -197,8 +221,8 @@ async def message_handler(data):
 
 
 async def _main():
-    # 故意制造一个错误来测试日志收集功能
-    # raise RuntimeError("This is a test error to check logging functionality.")
+    # Ensure self_id is fetched at startup
+    await get_self_id()
 
     for daemon in DAEMONS:
         if daemon not in _TASKS:
@@ -219,7 +243,6 @@ async def _main():
             try:
                 current_time = asyncio.get_event_loop().time()
 
-                # Log attempt only every 30 seconds to avoid spam
                 if current_time - last_log_time >= 30:
                     logger.info(
                         f"Attempting to connect to IM client at {green(uri)} (attempt {retry_count + 1})"
@@ -241,12 +264,11 @@ async def _main():
                         )
                     except Exception as e:
                         logger.error(f"Error in WebSocket connection: {e}")
-                    # Don't break here, continue retrying
                 else:
                     retry_count += 1
                     wait_time = min(
                         15, 5 + retry_count * 2
-                    )  # Start at 5s, increase by 2s each time, cap at 15s
+                    )
                     logger.info(
                         f"Connection failed, waiting {wait_time}s before retry {retry_count}"
                     )
@@ -255,23 +277,20 @@ async def _main():
                 retry_count += 1
                 current_time = asyncio.get_event_loop().time()
 
-                # Log error only every 60 seconds to avoid spam
                 if current_time - last_log_time >= 60:
                     logger.error(f"Error connecting to IM client at {green(uri)}: {e}")
                     last_log_time = current_time
 
                 wait_time = min(
                     15, 5 + retry_count * 2
-                )  # Start at 5s, increase by 2s each time, cap at 15s
+                )
                 logger.info(
                     f"Connection error, waiting {wait_time}s before retry {retry_count}"
                 )
                 await asyncio.sleep(wait_time)
 
-    # Start the connection task
     connection_task = asyncio.create_task(connect_with_retry())
 
-    # Wait for all tasks to complete (including daemons and connection)
     logger.info(
         f"Waiting for {len(_TASKS)} daemon task(s) and connection task to complete..."
     )
@@ -279,7 +298,6 @@ async def _main():
         all_tasks = list(_TASKS.values()) + [connection_task]
         results = await asyncio.gather(*all_tasks, return_exceptions=True)
 
-        # Log any exceptions that occurred
         for i, result in enumerate(results):
             if isinstance(result, Exception):
                 task_name = (

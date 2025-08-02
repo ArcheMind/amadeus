@@ -1,6 +1,5 @@
 import websockets
 from typing import NoReturn, Any, Callable, Dict, Optional
-import abc
 from loguru import logger
 import uuid
 import asyncio
@@ -9,7 +8,6 @@ from amadeus.tools.context import get_tool_context
 from amadeus.kvdb import KVModel
 import json
 
-import httpx
 from amadeus.common import (
     async_lru_cache,
     green,
@@ -327,40 +325,40 @@ class InstantMessagingClient:
 
         if response and response.get("status") == "ok" and sent_message_info:
             # Store the sent message to db to fix the echo problem
-            message_id = sent_message_info.get("message_id")
-            login_info = await self.get_login_info()
-            bot_id = login_info.get("user_id")
-            bot_nickname = login_info.get("nickname")
-            last_view_time = get_tool_context().get("last_view", time.time())
-
-            own_message = {
-                "post_type": "message",
-                "message_type": target_type,
-                "sender": {
-                    "user_id": bot_id,
-                    "nickname": bot_nickname,
-                    "card": bot_nickname,
-                },
-                "message": message,
-                "time": int(last_view_time),
-                "message_id": message_id,
-                "font": 0,
-            }
-
-            if target_type == "group":
-                own_message["group_id"] = target_id
-                own_message["sub_type"] = "normal"
-            elif target_type == "private":
-                own_message["user_id"] = target_id
-                own_message["sub_type"] = "friend"
-
-            message_record_db = KVModel(
-                self.db_env,
-                namespace=f"{target_type}_{target_id}",
-                kind="message_record",
-                extra_index=["time"],
-            )
-            message_record_db.put(str(message_id), own_message)
+            # message_id = sent_message_info.get("message_id")
+            # login_info = await self.get_login_info()
+            # bot_id = login_info.get("user_id")
+            # bot_nickname = login_info.get("nickname")
+            # last_view_time = get_tool_context().get("last_view", time.time())
+            #
+            # own_message = {
+            #     "post_type": "message",
+            #     "message_type": target_type,
+            #     "sender": {
+            #         "user_id": bot_id,
+            #         "nickname": bot_nickname,
+            #         "card": bot_nickname,
+            #     },
+            #     "message": message,
+            #     "time": int(last_view_time),
+            #     "message_id": message_id,
+            #     "font": 0,
+            # }
+            #
+            # if target_type == "group":
+            #     own_message["group_id"] = target_id
+            #     own_message["sub_type"] = "normal"
+            # elif target_type == "private":
+            #     own_message["user_id"] = target_id
+            #     own_message["sub_type"] = "friend"
+            #
+            # message_record_db = KVModel(
+            #     self.db_env,
+            #     namespace=f"{target_type}_{target_id}",
+            #     kind="message_record",
+            #     extra_index=["time"],
+            # )
+            # message_record_db.put(str(message_id), own_message)
             return response.get("data")
         else:
             return None

@@ -1,13 +1,17 @@
-from typing import Literal
+from typing import Literal, Dict, Any
 import yaml
 import time
 from amadeus.common import format_timestamp
-from amadeus.tools.context import get_tool_context
 from amadeus.executors.im import InstantMessagingClient
 from amadeus.llm import auto_tool_spec
+from amadeus.tools.context import get_tool_context
 from amadeus.image import analyze_image, search_meme
 from amadeus.kvdb import KVModel
 from loguru import logger
+import lmdb
+from amadeus.const import DATA_DIR
+from pathlib import Path
+from datetime import datetime
 
 from bs4 import BeautifulSoup
 
@@ -30,15 +34,98 @@ def parse_xml_element(text):
 class QQChat:
     def __init__(
         self,
-        api_base,
+        api_base: str,
+        self_id: int,
         chat_type: Literal["group", "private"],
         target_id: int,
-        db_env,
     ):
         self.client = InstantMessagingClient(api_base)
+        self.self_id = self_id
         self.chat_type = chat_type
         self.target_id = target_id
-        self.db_env = db_env
+
+        db_path = (
+            Path(DATA_DIR)
+            / "chats"
+            / str(self.self_id)
+            / self.chat_type
+            / str(self.target_id)
+        )
+        db_path.mkdir(parents=True, exist_ok=True)
+        # Use a specific file for the database
+        self.db_env = lmdb.open(str(db_path / "messages.mdb"), map_size=100 * 1024**2)
+
+        self.message_record_db = KVModel(
+            self.db_env,
+            # Namespace and kind are now somewhat redundant but kept for compatibility with KVModel structure
+            namespace=f"{self.chat_type}_{self.target_id}",
+            kind="message_record",
+            extra_index=["time"],
+        )
+
+    def save_message(self, message_data: Dict[str, Any]):
+        """Saves a single message dictionary to the database."""
+        message_id = message_data.get("message_id")
+        if not message_id:
+            logger.warning("Message data is missing message_id, cannot save.")
+            return
+        self.message_record_db.put(str(message_id), message_data)
+        logger.trace(
+            f"Saved message {message_id} to db for chat {self.chat_type}:{self.target_id}"
+        )
+
+    def get_history(self, limit: int = 20) -> list[Dict[str, Any]]:
+        """Retrieves message history from the database."""
+        # iter_by requires a time range. We use a wide range to get all messages.
+        message_iterator = self.message_record_db.iter_by(
+            "time", 0, datetime.now().timestamp() + 1
+        )
+
+        # iter_by returns tuples of (id, message_dict)
+        all_messages = [msg for _, msg in message_iterator]
+
+        # Sort by time, as iter_by does not guarantee order
+        sorted_messages = sorted(all_messages, key=lambda x: x.get("time", 0))
+
+        return sorted_messages[-limit:]
+
+    async def send_raw_message(self, message_body: list[Dict[str, Any]]):
+        sent_message_info = None
+        if self.chat_type == "group":
+            sent_message_info = await self.client.send_message(
+                message_body,
+                "group",
+                self.target_id,
+            )
+        elif self.chat_type == "private":
+            sent_message_info = await self.client.send_message(
+                message_body,
+                "private",
+                self.target_id,
+            )
+
+        if not sent_message_info or not sent_message_info.get("message_id"):
+            logger.error("Failed to send message or get message_id")
+            return False
+
+        # Store the sent message to db
+        message_id = sent_message_info.get("message_id")
+        message = await self.client.get_message(message_id)
+
+        if not message:
+            return False
+
+        context = get_tool_context()
+        if "last_view" in context:
+            send_time = context["last_view"]
+        else:
+            send_time = time.time()
+        message["time"] = int(send_time)
+
+        self.save_message(message)
+        logger.info(f"Stored own message {message_id} to db")
+
+        return True
 
     @auto_tool_spec(
         name="reply",
@@ -51,7 +138,6 @@ class QQChat:
             if xml.name not in ["meme", "at"]:
                 logger.info(f"无法解析的XML元素: {xml.name}")
                 return False
-            # 获取xml的meaning属性
             meme_b64 = await search_meme(xml["meaning"])
             if not meme_b64:
                 logger.info(f"无法找到表情包: {xml['meaning']}")
@@ -80,64 +166,7 @@ class QQChat:
                     },
                 },
             )
-
-        sent_message_info = None
-        if self.chat_type == "group":
-            sent_message_info = await self.client.send_message(
-                message_body,
-                "group",
-                self.target_id,
-            )
-        elif self.chat_type == "private":
-            sent_message_info = await self.client.send_message(
-                message_body,
-                "private",
-                self.target_id,
-            )
-
-        if not sent_message_info or not sent_message_info.get("message_id"):
-            logger.error("Failed to send message or get message_id")
-            return False
-
-        # Store the sent message to db to fix the echo problem
-        message_id = sent_message_info.get("message_id")
-        login_info = await self.client.get_login_info()
-        bot_id = login_info.get("user_id")
-        bot_nickname = login_info.get("nickname")
-        last_view_time = get_tool_context().get("last_view", time.time())
-
-        own_message = {
-            "post_type": "message",
-            "message_type": self.chat_type,
-            "sender": {
-                "user_id": bot_id,
-                "nickname": bot_nickname,
-                "card": bot_nickname,
-            },
-            "message": message_body,
-            "raw_message": text,
-            "time": int(last_view_time),
-            "message_id": message_id,
-            "font": 0,
-        }
-
-        if self.chat_type == "group":
-            own_message["group_id"] = self.target_id
-            own_message["sub_type"] = "normal"
-        elif self.chat_type == "private":
-            own_message["user_id"] = self.target_id
-            own_message["sub_type"] = "friend"
-
-        message_record_db = KVModel(
-            self.db_env,
-            namespace=f"{self.chat_type}_{self.target_id}",
-            kind="message_record",
-            extra_index=["time"],
-        )
-        message_record_db.put(str(message_id), own_message)
-        logger.info(f"Stored own message {message_id} to db")
-
-        return True
+        return await self.send_raw_message(message_body)
 
     @auto_tool_spec(
         name="ban",
@@ -171,8 +200,8 @@ class QQChat:
         return await self.client.delete_message(message_id)
 
     async def get_usercard(self, user_id: int):
-        self_id = (await self.client.get_login_info())["user_id"]
-        if int(user_id) == int(self_id):
+        # self_id is now an instance attribute
+        if int(user_id) == int(self.self_id):
             return "[ME]"
         usercard = None
         if self.chat_type == "group":
@@ -213,8 +242,8 @@ class QQChat:
         return ""
 
     async def render_message(self, data: dict):
-        sender = data.get("sender", 0)
-        time = data.get("time", 0)
+        sender = data.get("sender", {})
+        time_val = data.get("time", 0)
         if data.get("post_type") == "notice":
             if data.get("notice_type") == "notify":
                 noticer = await self.get_usercard(data["user_id"])
@@ -224,18 +253,18 @@ class QQChat:
                 action2 = data["raw_info"][4]["txt"]
                 if action2:
                     return f"""
-{noticer} {format_timestamp(time)}
+{noticer} {format_timestamp(time_val)}
 [拍了拍{noticee}({noticee}设置的拍一拍格式是"对方{action1}自己{action2}")]
 """
                 else:
                     return f"""
-{noticer} {format_timestamp(time)}
+{noticer} {format_timestamp(time_val)}
 [{action1} {noticee}]
 """
             elif data.get("notice_type") == "group_recall":
                 user = await self.get_usercard(data["user_id"])
                 return f"""
-{user} {format_timestamp(time)}
+{user} {format_timestamp(time_val)}
 [撤回消息]
 """
             else:
@@ -244,9 +273,9 @@ class QQChat:
             message_items = data.get("message", [])
             decoded_items = [await self.decode_message_item(i) for i in message_items]
             message_content = "".join(decoded_items)
-            user_card = await self.get_usercard(sender["user_id"])
+            user_card = await self.get_usercard(sender.get("user_id", 0))
             return f"""
-{user_card} {format_timestamp(time)}发送 id:{data["message_id"]}
+{user_card} {format_timestamp(time_val)}发送 id:{data["message_id"]}
 {message_content}
 """
         else:

@@ -150,7 +150,9 @@ async def llm(
                     if tool_name in tool_handlers:
                         handler = tool_handlers[tool_name]
                         arguments = json.loads(tool_call["function"]["arguments"])
+
                         result = await handler(**arguments)
+
                         messages.append(
                             {
                                 "role": "tool",

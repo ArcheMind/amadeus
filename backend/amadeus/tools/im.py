@@ -2,6 +2,7 @@ from typing import Literal
 import yaml
 import time
 from amadeus.common import format_timestamp
+from amadeus.tools.context import get_tool_context
 from amadeus.executors.im import InstantMessagingClient
 from amadeus.llm import auto_tool_spec
 from amadeus.image import analyze_image, search_meme
@@ -103,12 +104,11 @@ class QQChat:
         login_info = await self.client.get_login_info()
         bot_id = login_info.get("user_id")
         bot_nickname = login_info.get("nickname")
+        last_view_time = get_tool_context().get("last_view", time.time())
 
         own_message = {
             "post_type": "message",
             "message_type": self.chat_type,
-            "self_id": bot_id,
-            "user_id": bot_id,
             "sender": {
                 "user_id": bot_id,
                 "nickname": bot_nickname,
@@ -116,7 +116,7 @@ class QQChat:
             },
             "message": message_body,
             "raw_message": text,
-            "time": int(time.time()),
+            "time": int(last_view_time),
             "message_id": message_id,
             "font": 0,
         }
@@ -125,6 +125,7 @@ class QQChat:
             own_message["group_id"] = self.target_id
             own_message["sub_type"] = "normal"
         elif self.chat_type == "private":
+            own_message["user_id"] = self.target_id
             own_message["sub_type"] = "friend"
 
         message_record_db = KVModel(

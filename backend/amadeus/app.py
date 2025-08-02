@@ -1,4 +1,5 @@
 import time
+from amadeus.tools.context import set_tool_context
 import uuid
 import collections
 import asyncio
@@ -66,17 +67,18 @@ async def user_loop():
                 )
 
                 llm_output_chunks = []
-                async for m in llm(
-                    messages,
-                    tools=tools,
-                    continue_on_tool_call=False,
-                    temperature=1,
-                ):
-                    logger.info(green(m))
-                    logger.trace(
-                        f"LLM output for {green(chat_type)} {blue(target_id)}: {yellow(str(m))}"
-                    )
-                    llm_output_chunks.append(str(m))
+                with set_tool_context(dict(last_view=state.last_view)):
+                    async for m in llm(
+                        messages,
+                        tools=tools,
+                        continue_on_tool_call=False,
+                        temperature=1,
+                    ):
+                        logger.info(green(m))
+                        logger.trace(
+                            f"LLM output for {green(chat_type)} {blue(target_id)}: {yellow(str(m))}"
+                        )
+                        llm_output_chunks.append(str(m))
 
                 if (
                     llm_output_chunks

@@ -90,7 +90,7 @@ class ChatContext:
         """
         qq_chat_instance = await self.ensure_qq_chat_instance()
 
-        messages = qq_chat_instance.get_history(limit=12)
+        messages = qq_chat_instance.get_history(limit=15)
 
         groupcard = (
             await qq_chat_instance.client.get_group_name(self.target_id)
@@ -214,7 +214,7 @@ class ChatContext:
     - 某某A: 得到认同
     - 某某B: 暂不明确
     - 我：跟我无关
-    我的决定:
+    my_thought:
     - 忽略
 -
     逻辑:
@@ -224,8 +224,7 @@ class ChatContext:
     - 某某B: 暂不明确
     my_thought:
     - 刚刚回复
-    next_step:
-    - 等待
+    - 不需要行动
 -
     逻辑:
     - 某某C说了X事实
@@ -235,8 +234,7 @@ class ChatContext:
     - 某某C: 有点不高兴
     my_thought:
     - 我和某某C的关系还不够熟悉，可能不太能接受我的玩笑
-    next_step:
-    - 卖个萌回应C，尝试缓和
+    - 需要行动
 ```
 
 
@@ -256,7 +254,7 @@ class ChatContext:
 
 你的手机响了，打开后你看到是群聊`{groupcard}`有新消息。
 当前时间：{datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
-点开进入聊天页面，你翻阅到最近的消息（[ME]是你自己，排序是从旧到最新）：
+点开进入聊天页面，你翻阅到最近的消息（[ME]是你自己）：
 
 ```
 {msgs}

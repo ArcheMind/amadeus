@@ -54,6 +54,10 @@ async def analyze_image(image_url):
             return json.load(f)
 
     image_file = await get_image(image_url)
+    if not image_file:
+        logger.error(f"[图片分析] 无法获取图片：{image_url}")
+        return None
+
     file_hash = get_file_hash(image_file)
     data_path_by_file = IMAGE_ANALYZE_CACHE / f"file_{file_hash}.json"
 
@@ -200,7 +204,10 @@ async def get_image(image_url: str, ext="jpg") -> str:
                 f.write(response.content)
             return str(image_path)
         else:
-            raise Exception(f"Failed to download image: {response.status_code}")
+            logger.error(
+                f"Failed to download image: {response.status_code} - {image_url}"
+            )
+            return ""
 
 
 THUMBNAIL_CACHE = CACHE_DIR / "cache" / "image" / "thumbnail"
